@@ -6,6 +6,11 @@
   --sans: -apple-system, system-ui, "Helvetica Neue", Arial, sans-serif;
   --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
   --tlh: 150px; --cut: 7px;
+  /* tall phones (e.g. iPhone Pro Max standalone): every px of height beyond ~818px of usable space goes to the timeline,
+     so the stage/panel keep their size and more tracks become visible. 0 on shorter screens and in browser tabs. */
+  --tl-extra: clamp(0px, calc(100dvh - var(--safe-t) - 818px), 260px);
+  /* bottom padding for the tab bar: just enough to clear the home indicator, not the full 34px inset */
+  --tabs-pb: max(4px, calc(var(--safe-b) - 14px));
   color-scheme: dark;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -17,8 +22,8 @@ button:disabled { opacity: .3; pointer-events: none; }
 .ico { display: inline-flex; width: 18px; height: 18px; }
 .ico svg { width: 100%; height: 100%; }
 
-#app { position: fixed; inset: 0; display: grid; padding-top: var(--safe-t); grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(120px, 1fr) auto var(--tlh) auto auto;
+#app { position: fixed; inset: 0; height: 100%; height: 100dvh; display: grid; padding-top: var(--safe-t); grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(120px, 1fr) auto calc(var(--tlh) + var(--tl-extra)) auto auto;
   grid-template-areas: "top" "stage" "transport" "timeline" "panel" "tabs"; }
 body.panel-open { --tlh: 118px; }
 
@@ -164,7 +169,7 @@ select { flex: 1; background: var(--bg); border: 1px solid var(--line); border-r
 .bez { background: var(--bg); border: 1px solid var(--line); touch-action: none; }
 
 /* tabs */
-#tabs { grid-area: tabs; display: flex; justify-content: space-around; border-top: 1px solid var(--line); background: var(--bg); padding-bottom: var(--safe-b); }
+#tabs { grid-area: tabs; display: flex; justify-content: space-around; border-top: 1px solid var(--line); background: var(--bg); padding-bottom: var(--tabs-pb); }
 .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 7px 0 6px; font: 8.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--tx3); position: relative; }
 .tab .ico { width: 19px; height: 19px; }
 .tab.on { color: var(--cy); }
@@ -182,7 +187,7 @@ dialog::backdrop { background: rgba(2,3,8,.72); backdrop-filter: blur(4px); -web
 .pmain b { font: 600 11px var(--sans); } .pmain em { font: 9px var(--mono); font-style: normal; color: var(--tx3); }
 .prog { height: 3px; background: var(--line); overflow: hidden; } .prog i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--cy), var(--mg)); box-shadow: 0 0 10px var(--cy); }
 .preview { width: 100%; max-height: 40dvh; background: #000; margin-top: 6px; }
-.toast { position: fixed; left: 50%; bottom: calc(90px + var(--safe-b)); transform: translate(-50%, 10px); opacity: 0; transition: .25s; z-index: 50; padding: 8px 14px; font: 10px var(--mono);
+.toast { position: fixed; left: 50%; bottom: calc(76px + var(--tabs-pb)); transform: translate(-50%, 10px); opacity: 0; transition: .25s; z-index: 50; padding: 8px 14px; font: 10px var(--mono);
   background: var(--bg3); border: 1px solid var(--cy); color: var(--tx); box-shadow: 0 0 20px rgba(0,240,255,.25); pointer-events: none; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 

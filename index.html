@@ -6,7 +6,10 @@
 <meta name="theme-color" content="#05060a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- "default" (not black-translucent): on iOS 26 standalone, black-translucent sizes the layout viewport as screen minus
+     the status bar but anchors it at the top, leaving a dead, untappable ~62px band at the bottom. With "default" the
+     web view starts below the status bar (painted with theme-color) and ends exactly at the bottom edge. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Kinetic">
 <title>KINETIC // motion</title>
 <link rel="manifest" href="manifest.webmanifest">

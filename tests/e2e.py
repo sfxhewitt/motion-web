@@ -1,4 +1,4 @@
-"""End-to-end tests: desktop (1440x900) and iPhone emulation (Chromium, iPhone 15 Pro Max descriptor)."""
+"""End-to-end tests: desktop (1440x900) and iPhone emulation (Chromium, iPhone 15 Pro Max descriptor at 440x956 = iPhone 17 Pro Max)."""
 import json, sys, os, struct, zlib, time
 from playwright.sync_api import sync_playwright, expect
 
@@ -35,6 +35,15 @@ def run(pw, label, ctx_opts, mobile):
     # 1. demo renders
     sig0 = pg.evaluate(SIG)
     check(f'[{label}] demo project loads & renders', P('__app.project.layers.length') == 5 and sig0['nz'] > 50, sig0)
+    # full-height layout: tab bar pinned to the bottom, reclaimed height goes to the timeline
+    lay = P("""(() => { const r = id => document.getElementById(id).getBoundingClientRect();
+      return { vh: innerHeight, app: Math.round(r('app').bottom), tabs: Math.round(r('tabs').bottom), tl: Math.round(r('timeline').height), stage: Math.round(r('stageWrap').height) }; })()""")
+    if mobile:
+        check(f'[{label}] tab bar bottom within 40px of viewport bottom', lay['vh'] - lay['tabs'] <= 40 and lay['tabs'] <= lay['vh'], lay)
+        check(f'[{label}] timeline gets extra height on tall screen (>118px) & stage stays sensible (>=180px)', lay['tl'] > 118 and lay['stage'] >= 180, lay)
+        pg.screenshot(path=f'{SHOTS}/{label}-00-fullheight.png')
+    else:
+        check(f'[{label}] app fills viewport height', abs(lay['vh'] - lay['app']) <= 1, lay)
     P('__app.seek(1.6)'); pg.wait_for_timeout(200)
     pg.screenshot(path=f'{SHOTS}/{label}-01-demo.png')
     # playback advances time
