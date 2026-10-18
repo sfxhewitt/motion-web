@@ -110,9 +110,34 @@ export function makeLayer(p, type, opts = {}) {
 // ---- keyframes ----
 export function hasKeys(L, prop) { return !!(L.keys[prop] && L.keys[prop].length); }
 
+// Animated values may be numbers, vectors (arrays), hex colours or discrete values (bool / select / layer id).
+export function baseGet(L, prop) {
+  if (prop in L.props) return L.props[prop];
+  const i = prop.indexOf('.'); if (i < 0) return L.props[prop];
+  const ns = prop.slice(0, i), rest = prop.slice(i + 1);
+  if (ns === 'shape') return L.shape?.[rest];
+  if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); return f ? f.params[rest.slice(j + 1)] : undefined; }
+  return undefined;
+}
+export function baseSet(L, prop, v) {
+  const i = prop.indexOf('.'); if (i < 0) { L.props[prop] = v; return; }
+  const ns = prop.slice(0, i), rest = prop.slice(i + 1);
+  if (ns === 'shape' && L.shape) L.shape[rest] = v;
+  else if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); if (f) f.params[rest.slice(j + 1)] = v; }
+}
+const hexRe = /^#[0-9a-f]{6}$/i;
+const hx = h => { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+export function lerpV(a, b, e) {
+  if (typeof a === 'number' && typeof b === 'number') return a + (b - a) * e;
+  if (Array.isArray(a) && Array.isArray(b)) return a.map((x, i) => x + ((b[i] ?? x) - x) * e);
+  if (typeof a === 'string' && hexRe.test(a) && typeof b === 'string' && hexRe.test(b)) {
+    const A = hx(a), B = hx(b); return '#' + A.map((x, i) => Math.round(Math.min(255, Math.max(0, x + (B[i] - x) * e))).toString(16).padStart(2, '0')).join('');
+  }
+  return e >= 1 ? b : a; // hold
+}
 export function valueAt(L, prop, t) {
   const ks = L.keys[prop];
-  if (!ks || !ks.length) return L.props[prop];
+  if (!ks || !ks.length) return baseGet(L, prop);
   if (t <= ks[0].t) return ks[0].v;
   const last = ks[ks.length - 1];
   if (t >= last.t) return last.v;
@@ -120,7 +145,7 @@ export function valueAt(L, prop, t) {
     const a = ks[i], b = ks[i + 1];
     if (t >= a.t && t < b.t) {
       const u = (t - a.t) / (b.t - a.t || 1);
-      return a.v + (b.v - a.v) * applyEase(a.ease, u);
+      return lerpV(a.v, b.v, applyEase(a.ease, u));
     }
   }
   return last.v;
@@ -151,7 +176,7 @@ export function removeKey(L, prop, id) {
 
 // Set a property honoring animation: if animated, write a key at t; else static.
 export function writeProp(L, prop, t, v) {
-  if (hasKeys(L, prop)) setKey(L, prop, t, v); else L.props[prop] = v;
+  if (hasKeys(L, prop)) setKey(L, prop, t, v); else baseSet(L, prop, v);
 }
 
 export function allKeys(L) {

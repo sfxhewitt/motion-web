@@ -1,6 +1,6 @@
-// Canvas compositor: draws layers, runs effect chains, applies blend modes.
+// Canvas compositor: draws layers, runs the WebGL effect chain, applies blend modes.
 import { valueAt } from './state.js';
-import { FX, applyTransformEffects } from './effects.js';
+import { FXEngine, EFFECTS, activeFx, evalParams, isShaderFx, applyTransformEffects, applyTextEffects, shapeEffects } from './effects.js';
 
 export const BLEND_MODES = [
   ['normal', 'Normal', 'source-over'], ['add', 'Add', 'lighter'], ['screen', 'Screen', 'screen'], ['lighten', 'Lighten', 'lighten'],
@@ -11,6 +11,7 @@ export const BLEND_MODES = [
   ['clip', 'Clip to Below', 'source-atop'], ['mask', 'Alpha Mask', 'destination-in'], ['cut', 'Cut Out', 'destination-out'],
 ];
 const OPS = Object.fromEntries(BLEND_MODES.map(b => [b[0], b[2]]));
+const D = Math.PI / 180;
 
 export const FONTS = {
   system: 'system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif',
@@ -23,11 +24,38 @@ export const FONTS = {
 };
 
 export const media = new Map(); // id -> { type, el, url }
+let lastProject = null, lastT = 0;
+const measureCtx = () => (measureCtx.c || (measureCtx.c = document.createElement('canvas').getContext('2d')));
 
-export function evalTransform(L, t) {
-  const tr = {};
+// keyframed shape geometry (Width / Height / Corner etc. may be animated: rounded square -> circle morphs)
+export function evalShape(L, t) {
+  if (!L.shape) return L.shape;
+  let out = null;
+  for (const k in L.keys) if (k.startsWith('shape.') && L.keys[k].length) { out = out || { ...L.shape }; out[k.slice(6)] = valueAt(L, k, t); }
+  return out || L.shape;
+}
+// world-space outline of a layer (for Move Along Path / Repeat Along Path)
+function pathOfLayer(project, id, t) {
+  const L = project?.layers.find(l => l.id === id); if (!L || L.type !== 'shape') return null;
+  const s = evalShape(L, t), pts = shapePoints(s, 96);
+  const x = valueAt(L, 'x', t), y = valueAt(L, 'y', t), sc = valueAt(L, 'scale', t), r = valueAt(L, 'rotation', t) * D, c = Math.cos(r), sn = Math.sin(r);
+  return { pts: pts.map(([px, py]) => [x + (px * c - py * sn) * sc, y + (px * sn + py * c) * sc]), closed: s.kind !== 'path' || s.closed !== false };
+}
+function fxCtx(L, t, project, extra = {}) {
+  return { t, lt: t - L.start, dur: Math.max(0.01, L.end - L.start), fps: project?.fps || 30, pathOf: project ? id => pathOfLayer(project, id, t) : null, ...extra };
+}
+export function evalTransform(L, t, project = lastProject) {
+  const tr = { sx: 1, sy: 1 };
   for (const p of ['x', 'y', 'scale', 'rotation', 'opacity']) tr[p] = valueAt(L, p, t);
-  return applyTransformEffects(L, tr, t);
+  if (!L.effects?.length) return tr;
+  const b = L.type === 'shape' ? evalShape(L, t) : null;
+  const c = fxCtx(L, t, project, { base: { x: tr.x, y: tr.y }, bh: b ? b.h : L.type === 'text' ? textLayout(measureCtx(), L.text).h : L.media ? L.media.h : project?.h || 0 });
+  return applyTransformEffects(L, tr, t, c);
+}
+export function evalText(L, t, project = lastProject) {
+  const tx = { ...L.text };
+  if (L.effects?.length) applyTextEffects(L, tx, t, fxCtx(L, t, project));
+  return tx;
 }
 
 function gradient(ctx, w, h, c1, c2, angle) {
@@ -85,9 +113,37 @@ function shapePath(ctx, s) {
 
 // Freehand drawing strokes (local coords). Eraser strokes cut through the layer only (drawn on the layer canvas).
 export const brushWidth = (st, project) => st.size * project.w / 540;
-function drawStrokes(ctx, L, project) {
-  for (const st of L.draw.strokes) {
-    if (!st.pts.length) continue;
+const plen = pts => { let l = 0; for (let i = 1; i < pts.length; i++) l += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return l; };
+// sample a polyline into evenly spaced points (for tapered strokes)
+function resample(pts, step) {
+  const out = [pts[0].slice()]; let acc = 0;
+  for (let i = 1; i < pts.length; i++) { const a = pts[i - 1], b = pts[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]); let d = step - acc;
+    while (d <= l) { out.push([a[0] + (b[0] - a[0]) * d / l, a[1] + (b[1] - a[1]) * d / l]); d += step; } acc = (acc + l) % step; }
+  const z = pts[pts.length - 1]; if (out.length < 2 || Math.hypot(out[out.length - 1][0] - z[0], out[out.length - 1][1] - z[1]) > 0.01) out.push(z.slice());
+  return out;
+}
+// variable-width stroke along evenly spaced points: filled circles + quads between samples (smooth taper, no seams)
+function taperPath(ctx, pts, w0, tap) {
+  const n = pts.length - 1, mn = Math.max(0, Math.min(100, tap.min)) / 100;
+  const wf = i => { const u = n ? i / n : 0; let f = 1; if (tap.start > 0) f = Math.min(f, u / (tap.start / 100)); if (tap.end > 0) f = Math.min(f, (1 - u) / (tap.end / 100)); f = Math.max(0, Math.min(1, f)); f = f * f * (3 - 2 * f); return (mn + (1 - mn) * f) * w0 / 2; };
+  ctx.beginPath();
+  for (let i = 0; i <= n; i++) { const r = wf(i); if (r > 0.05) { ctx.moveTo(pts[i][0] + r, pts[i][1]); ctx.arc(pts[i][0], pts[i][1], r, 0, Math.PI * 2); } }
+  for (let i = 0; i < n; i++) { const a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l, ra = wf(i), rb = wf(i + 1);
+    ctx.moveTo(a[0] + nx * ra, a[1] + ny * ra); ctx.lineTo(b[0] + nx * rb, b[1] + ny * rb); ctx.lineTo(b[0] - nx * rb, b[1] - ny * rb); ctx.lineTo(a[0] - nx * ra, a[1] - ny * ra); ctx.closePath(); }
+  ctx.fill('nonzero');
+}
+// Freehand drawing strokes (local coords). Eraser strokes cut through the layer only (drawn on the layer canvas).
+// sfx: { drawprogress: {start,end}, stroketaper: {start,end,min} } evaluated shape effects
+function drawStrokes(ctx, L, project, sfx) {
+  const prog = sfx?.drawprogress, tap = sfx?.stroketaper;
+  const strokes = L.draw.strokes.filter(st => st.pts.length);
+  const lens = strokes.map(st => plen(st.pts)), total = lens.reduce((a, b) => a + b, 0) || 1;
+  let a0 = 0, a1 = total;
+  if (prog) { const s0 = Math.max(0, Math.min(100, prog.start)), s1 = Math.max(0, Math.min(100, prog.end)); a0 = Math.min(s0, s1) / 100 * total; a1 = Math.max(s0, s1) / 100 * total; }
+  let acc = 0;
+  strokes.forEach((st, si) => {
+    const len = lens[si], from = acc, to = acc + len; acc = to;
+    if (prog && (to < a0 || from > a1 || a1 - a0 <= 0)) return;
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const lw = brushWidth(st, project);
@@ -95,15 +151,20 @@ function drawStrokes(ctx, L, project) {
     ctx.strokeStyle = ctx.fillStyle = st.tool === 'eraser' ? '#000' : st.color;
     if (st.tool === 'brush') { ctx.globalAlpha *= 0.85; ctx.shadowColor = st.color; ctx.shadowBlur = lw * 0.6 * (ctx.getTransform().a || 1); }
     ctx.lineWidth = st.tool === 'brush' ? lw * 0.7 : lw;
-    ctx.beginPath();
-    if (st.pts.length === 1) { ctx.arc(st.pts[0][0], st.pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); }
-    else {
-      ctx.moveTo(st.pts[0][0], st.pts[0][1]);
-      for (let i = 1; i < st.pts.length - 1; i++) { const a = st.pts[i], b = st.pts[i + 1]; ctx.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); }
-      const z = st.pts[st.pts.length - 1]; ctx.lineTo(z[0], z[1]); ctx.stroke();
+    let pts = st.pts;
+    if (pts.length === 1) { if (!prog || a1 > from) { ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); } ctx.restore(); return; }
+    if (prog || tap) pts = resample(pts, Math.max(0.5, Math.min(lw * 0.25, len / 400)));
+    if (prog) { const n = pts.length - 1, u0 = Math.max(0, (a0 - from) / len), u1 = Math.min(1, (a1 - from) / len); pts = pts.slice(Math.floor(u0 * n), Math.ceil(u1 * n) + 1); if (pts.length < 2) { ctx.restore(); return; } }
+    if (tap && (tap.start > 0 || tap.end > 0)) {
+      taperPath(ctx, pts, ctx.lineWidth, tap);
+    } else {
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      if (prog) for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      else { for (let i = 1; i < pts.length - 1; i++) { const a = pts[i], b = pts[i + 1]; ctx.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); } const z = pts[pts.length - 1]; ctx.lineTo(z[0], z[1]); }
+      ctx.stroke();
     }
     ctx.restore();
-  }
+  });
 }
 
 export function textLayout(ctx, tx) {
@@ -117,21 +178,27 @@ export function textLayout(ctx, tx) {
 }
 
 // Local-space bounds (w,h centered at origin) for hit-testing / overlay
-export function layerBounds(L, project, ctx) {
+export function layerBounds(L, project, ctx, t) {
   switch (L.type) {
     case 'shape': {
-      if (L.shape.kind !== 'path') return { w: L.shape.w, h: L.shape.h };
+      if (L.shape.kind !== 'path') { const s = evalShape(L, t ?? lastT); return { w: s.w, h: s.h }; }
       let mx = 1, my = 1; for (const p of L.shape.pts || []) { mx = Math.max(mx, Math.abs(p[0])); my = Math.max(my, Math.abs(p[1])); }
       return { w: mx * 2, h: my * 2 };
     }
     case 'audio': return { w: 0, h: 0 };
-    case 'text': { const m = textLayout(ctx, L.text); return { w: m.w, h: m.h }; }
+    case 'text': { const m = textLayout(ctx || measureCtx(), t != null ? evalText(L, t, project) : L.text); return { w: m.w, h: m.h }; }
     case 'image': case 'video': return { w: L.media.w, h: L.media.h };
     default: return { w: project.w, h: project.h };
   }
 }
 
-function drawContent(ctx, L, project) {
+function shapePerimeter(s) {
+  if (s.kind === 'ellipse' || s.kind === 'ring') { const a = s.w / 2, b = s.h / 2, h = ((a - b) / (a + b || 1)) ** 2; return Math.PI * (a + b) * (1 + 3 * h / (10 + Math.sqrt(4 - 3 * h))); }
+  if (s.kind === 'rect' || s.kind === undefined) { const r = Math.min(s.radius || 0, s.w / 2, s.h / 2); return 2 * (s.w + s.h) - (8 - 2 * Math.PI) * r; }
+  const p = shapePoints(s, 96); return plen(p) + (s.kind !== 'path' || s.closed !== false ? Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]) : 0);
+}
+// ev: { shape, tx, sfx } = evaluated (keyframed / effect-modified) content for this frame
+function drawContent(ctx, L, project, ev = {}) {
   switch (L.type) {
     case 'solid': {
       const s = L.solid;
@@ -139,38 +206,75 @@ function drawContent(ctx, L, project) {
       ctx.fillRect(-project.w / 2, -project.h / 2, project.w, project.h); break;
     }
     case 'shape': {
-      const s = L.shape; shapePath(ctx, s);
+      const s = ev.shape || L.shape, prog = ev.sfx?.drawprogress; shapePath(ctx, s);
+      if (prog) {
+        // Draw Progress: trace the outline, fill fades in as the outline closes
+        const per = shapePerimeter(s), s0 = Math.max(0, Math.min(100, Math.min(prog.start, prog.end))) / 100, s1 = Math.max(0, Math.min(100, Math.max(prog.start, prog.end))) / 100;
+        const done = s1 - s0, fa = prog.fill ? Math.max(0, Math.min(1, (done - 0.85) / 0.15)) : 0;
+        if (s.fillOn && fa > 0) { ctx.save(); ctx.globalAlpha *= fa; ctx.fillStyle = s.gradient ? gradient(ctx, s.w, s.h, s.fill, s.fill2, s.gradAngle) : s.fill; ctx.fill('evenodd'); ctx.restore(); }
+        if (done > 0) { ctx.lineWidth = s.strokeW > 0 ? s.strokeW : Math.max(3, Math.min(s.w, s.h) * 0.05); ctx.strokeStyle = s.strokeW > 0 ? s.stroke : s.fill; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+          ctx.setLineDash([per * done, per * 2]); ctx.lineDashOffset = -per * s0; ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0; }
+        break;
+      }
       if (s.fillOn) { ctx.fillStyle = s.gradient ? gradient(ctx, s.w, s.h, s.fill, s.fill2, s.gradAngle) : s.fill; ctx.fill('evenodd'); }
-      if (s.strokeW > 0) { ctx.lineWidth = s.strokeW; ctx.strokeStyle = s.stroke; ctx.lineJoin = 'round'; ctx.stroke(); }
+      const tap = ev.sfx?.stroketaper;
+      if (s.strokeW > 0 && tap && (tap.start > 0 || tap.end > 0)) {
+        const p0 = shapePoints(s, 160), closed = s.kind !== 'path' || s.closed !== false; if (closed) p0.push(p0[0].slice());
+        ctx.fillStyle = s.stroke; taperPath(ctx, resample(p0, Math.max(0.5, s.strokeW * 0.25)), s.strokeW, tap);
+      } else if (s.strokeW > 0) { ctx.lineWidth = s.strokeW; ctx.strokeStyle = s.stroke; ctx.lineJoin = 'round'; ctx.stroke(); }
       break;
     }
     case 'text': {
-      const tx = L.text, m = textLayout(ctx, tx);
-      ctx.textBaseline = 'middle'; ctx.textAlign = tx.align;
-      const x = tx.align === 'left' ? -m.w / 2 : tx.align === 'right' ? m.w / 2 : 0;
-      m.lines.forEach((ln, i) => {
-        const y = -m.h / 2 + m.lh * (i + 0.5);
-        if (tx.strokeW > 0) { ctx.lineWidth = tx.strokeW; ctx.strokeStyle = tx.stroke; ctx.lineJoin = 'round'; ctx.strokeText(ln, x, y); }
-        ctx.fillStyle = tx.fill; ctx.fillText(ln, x, y);
-      });
+      const tx = ev.tx || L.text, m = textLayout(ctx, tx);
+      ctx.textBaseline = 'middle';
+      if (!tx.alpha && !tx.chars) {
+        ctx.textAlign = tx.align;
+        const x = tx.align === 'left' ? -m.w / 2 : tx.align === 'right' ? m.w / 2 : 0;
+        m.lines.forEach((ln, i) => {
+          const y = -m.h / 2 + m.lh * (i + 0.5);
+          if (tx.strokeW > 0) { ctx.lineWidth = tx.strokeW; ctx.strokeStyle = tx.stroke; ctx.lineJoin = 'round'; ctx.strokeText(ln, x, y); }
+          ctx.fillStyle = tx.fill; ctx.fillText(ln, x, y);
+        });
+      } else {
+        // per-character drawing (Text Progress / Text Transform)
+        ctx.textAlign = 'left'; let gi = 0; const base = ctx.globalAlpha;
+        m.lines.forEach((ln, li) => {
+          const y = -m.h / 2 + m.lh * (li + 0.5), lw = m.widths[li];
+          const x0 = tx.align === 'left' ? -m.w / 2 : tx.align === 'right' ? m.w / 2 - lw : -lw / 2;
+          let prefix = '';
+          for (const ch of ln) {
+            const px = prefix ? ctx.measureText(prefix).width : 0, cw = ctx.measureText(ch).width; prefix += ch;
+            const T = tx.chars?.[gi], a = (tx.alpha ? tx.alpha[gi] ?? 1 : 1) * (T ? T.op : 1); gi++;
+            if (a <= 0.002 || ch === ' ') continue;
+            ctx.save(); ctx.globalAlpha = base * Math.min(1, a);
+            ctx.translate(x0 + px + cw / 2 + (T?.dx || 0), y + (T?.dy || 0)); if (T) { ctx.rotate((T.rot || 0) * D); ctx.scale(T.sc ?? 1, T.sc ?? 1); }
+            if (tx.strokeW > 0) { ctx.lineWidth = tx.strokeW; ctx.strokeStyle = tx.stroke; ctx.lineJoin = 'round'; ctx.strokeText(ch, -cw / 2, 0); }
+            ctx.fillStyle = tx.fill; ctx.fillText(ch, -cw / 2, 0); ctx.restore();
+          }
+          gi++; // the newline
+        });
+      }
       if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
       break;
     }
-    case 'draw': drawStrokes(ctx, L, project); break;
+    case 'draw': drawStrokes(ctx, L, project, ev.sfx); break;
     case 'image': case 'video': {
       const m = media.get(L.media.id);
-      if (m && m.el && (m.type === 'image' ? m.el.complete : m.el.readyState >= 2)) ctx.drawImage(m.el, -L.media.w / 2, -L.media.h / 2, L.media.w, L.media.h);
+      if (m && m.el && (m.type === 'image' ? (m.el.complete ?? true) : m.el.readyState >= 2)) ctx.drawImage(m.el, -L.media.w / 2, -L.media.h / 2, L.media.w, L.media.h);
       else { ctx.fillStyle = '#1b1d2a'; ctx.fillRect(-L.media.w / 2, -L.media.h / 2, L.media.w, L.media.h); }
       break;
     }
   }
 }
 
+const NOT_TEX = new Set(['path']); // layer params that are paths, not texture sources
 export class Renderer {
-  constructor() { this.fx = new FX(); this.layerCanvas = document.createElement('canvas'); this.tmp = document.createElement('canvas'); this.errors = []; }
+  constructor() { this.layerCanvas = document.createElement('canvas'); this.tmp = document.createElement('canvas'); this.tmp2 = document.createElement('canvas'); this.refs = {}; this.errors = []; this._fx = null; }
+  get fx() { return this._fx || (this._fx = new FXEngine()); } // lazy: one WebGL context per renderer, only when an effect needs it
   _size(c, w, h) { if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } }
 
   render(project, t, target, { skipMediaSync = false } = {}) {
+    lastProject = project; lastT = t; this.project = project;
     const ctx = target.getContext('2d');
     const W = target.width, H = target.height, s = W / project.w;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
@@ -197,39 +301,76 @@ export class Renderer {
       this._layer(ctx, L, t, s, W, H, OPS[L.blend] || 'source-over', project);
     }
   }
+  // render one layer by itself (no blend) into a pooled canvas: texture source for Displacement Map, Bump Map etc.
+  _refLayer(id, t, s, W, H, project, depth) {
+    const L = project.layers.find(l => l.id === id); if (!L || L.type === 'audio') return null;
+    const c = this.refs[id] || (this.refs[id] = document.createElement('canvas')); this._size(c, W, H);
+    const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
+    if (t >= L.start && t < L.end) this._layer(x, L, t, s, W, H, 'source-over', project, depth + 1);
+    return c;
+  }
   // draw one layer onto ctx with composite op `op`
-  _layer(ctx, L, t, s, W, H, op, project) {
-    const tr = evalTransform(L, t);
+  _layer(ctx, L, t0, s, W, H, op, project, depth = 0) {
+    const fxs = L.effects?.length ? activeFx(L) : [];
+    let t = t0;
+    const tq = fxs.find(f => f.type === 'timequant');
+    if (tq) { const fps = Math.max(0.5, evalParams(L, tq, t0).fps); t = L.start + Math.floor((t0 - L.start) * fps + 1e-6) / fps; }
+    const tr = evalTransform(L, t, project);
     if (tr.opacity <= 0 && L.type !== 'adjust') return;
-    const shaderFx = this.fx.ok && this.fx.hasShaderFx(L.effects);
+    const shaderFx = fxs.filter(f => isShaderFx(EFFECTS[f.type]));
+    const useGL = shaderFx.length > 0 && this.fx.ok;
+    const mb = fxs.find(f => f.type === 'motionblur'), echo = fxs.find(f => f.type === 'echo');
     const lc = this.layerCanvas, lctx = lc.getContext('2d');
     try {
+      // texture sources referenced by layer params must be rendered before this layer uses the shared canvases
+      const refs = {};
+      if (useGL && depth < 2) for (const f of shaderFx) for (const [k, sp] of Object.entries(EFFECTS[f.type].params)) if (sp.t === 'layer' && !NOT_TEX.has(k)) {
+        const id = evalParams(L, f, t)[k]; if (id && id !== L.id && !refs[id]) refs[id] = this._refLayer(id, t, s, W, H, project, depth); }
+      const items = () => shaderFx.map(f => ({ def: EFFECTS[f.type], p: evalParams(L, f, t), fx: f }));
+      const hooks = { backdrop: ctx.canvas, layer: id => refs[id] || null };
       if (L.type === 'adjust') {
-        if (!shaderFx) return;
+        if (!useGL) return;
         this._size(this.tmp, W, H); const tctx = this.tmp.getContext('2d');
+        tctx.setTransform(1, 0, 0, 1, 0, 0); tctx.globalAlpha = 1; tctx.globalCompositeOperation = 'source-over';
         tctx.clearRect(0, 0, W, H); tctx.drawImage(ctx.canvas, 0, 0);
-        const out = this.fx.apply(this.tmp, L.effects, t, s);
-        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity));
-        ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0);
-        ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        const c = { ...fxCtx(L, t, project), t: t0, s, cx: W / 2, cy: H / 2, hw: W / 2, hh: H / 2, rot: 0, base: { x: project.w / 2, y: project.h / 2 }, bh: project.h };
+        const out = this.fx.apply(this.tmp, items(), c, hooks);
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity));
+        ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0); ctx.restore();
         return;
       }
-      const drawTo = (c) => {
+      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
+      const drawTo = (c, tt = t, trr = tr) => {
         c.setTransform(s, 0, 0, s, 0, 0);
-        c.translate(tr.x, tr.y); c.rotate(tr.rotation * Math.PI / 180); c.scale(tr.scale * (L.flipX ? -1 : 1), tr.scale * (L.flipY ? -1 : 1));
-        if (L.shadow?.on && L.type !== 'adjust') { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
-        drawContent(c, L, project);
+        c.translate(trr.x, trr.y); c.rotate(trr.rotation * D); c.scale(trr.scale * trr.sx * (L.flipX ? -1 : 1), trr.scale * trr.sy * (L.flipY ? -1 : 1));
+        if (L.shadow?.on) { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
+        drawContent(c, L, project, evAt(tt));
       };
-      if (!shaderFx && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
-        ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore();
-      } else {
-        lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, W, H);
-        lctx.save(); drawTo(lctx); lctx.restore();
-        const src = shaderFx ? this.fx.apply(lc, L.effects, t, s) : lc;
-        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
-        ctx.drawImage(src, 0, 0); ctx.restore();
+      const simple = !useGL && !mb && !echo && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);
+      if (simple) { ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore(); return; }
+      lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.globalAlpha = 1; lctx.globalCompositeOperation = 'source-over'; lctx.clearRect(0, 0, W, H);
+      const sample = (tt, alpha, comp = 'source-over') => { // draw the layer at another time into lc
+        const tmp = this.tmp2; this._size(tmp, W, H); const x = tmp.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.clearRect(0, 0, W, H);
+        const trr = tt === t ? tr : evalTransform(L, tt, project); x.save(); drawTo(x, tt, trr); x.restore();
+        lctx.save(); lctx.globalAlpha = Math.max(0, Math.min(1, alpha * (tr.opacity > 0 ? trr.opacity / tr.opacity : 1))); lctx.globalCompositeOperation = comp; lctx.drawImage(tmp, 0, 0); lctx.restore(); };
+      if (mb) {
+        const p = evalParams(L, mb, t), n = Math.max(2, Math.min(64, Math.round(p.samples))), span = p.shutter / 360 / (project.fps || 30);
+        for (let k = 0; k < n; k++) sample(t + (k / (n - 1) - 0.5) * span, 1 / n, 'lighter');
+      } else if (echo) {
+        const p = evalParams(L, echo, t), n = Math.max(1, Math.round(p.n)), dec = 1 - p.decay / 100;
+        const echoes = () => { for (let i = n; i >= 1; i--) sample(t - i * p.delay, Math.pow(dec, i)); };
+        if (!p.front) echoes(); sample(t, 1); if (p.front) echoes();
+      } else { lctx.save(); drawTo(lctx); lctx.restore(); }
+      let src = lc;
+      if (useGL) {
+        const b = layerBounds(L, project, lctx, t);
+        const k = Math.abs(tr.scale) * s;
+        const c = { ...fxCtx(L, t, project), t: t0, s, cx: tr.x * s, cy: H - tr.y * s, hw: Math.max(1, b.w * Math.abs(tr.sx) * k / 2), hh: Math.max(1, b.h * Math.abs(tr.sy) * k / 2), rot: -tr.rotation * D, base: { x: tr.x, y: tr.y }, bh: b.h };
+        src = this.fx.apply(lc, items(), c, hooks);
       }
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
+      ctx.drawImage(src, 0, 0); ctx.restore();
     } catch (e) { if (this.errors.length < 20) this.errors.push(String(e)); console.error(e); }
   }
 }

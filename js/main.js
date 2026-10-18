@@ -1,7 +1,8 @@
 import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
-import { EFFECTS, makeEffect } from './effects.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
+import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
+import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired } from './fxui.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
@@ -100,6 +101,7 @@ async function importAudioFile(file) {
 
 // ---------------- project ops ----------------
 function setProject(p, { resetHistory = true } = {}) {
+  migrateProject(p); closeBrowser();
   S.project = p; S.sel = null; S.multi.clear(); S.selKeys.clear(); S.vz = { k: 1, x: 0, y: 0 }; S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
   if (resetHistory) history.reset(p);
   store.saveProject(p); hydrateMedia(p); refreshAll();
@@ -118,6 +120,7 @@ function deselect() { S.sel = null; S.multi.clear(); S.selKeys.clear(); if (S.ta
 function goBack() {
   if (S.full) { S.full = false; return refreshAll(); }
   if (S.tab === 'add') { S.tab = null; return refreshAll(); }
+  if (S.tab === 'ease' && S.easeBack) { S.tab = S.easeBack; S.easeBack = null; return refreshAll(); }
   if (isSub()) { S.tab = null; S.picking = false; return refreshAll(); }
   if (S.sel) return deselect();
   showHome();
@@ -135,7 +138,7 @@ function openSub(id) {
 function duplicateLayer(L) {
   if (!L) return toast('Select a layer to duplicate');
   const ix = P().layers.indexOf(L);
-  const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); c.effects.forEach(f => (f.id = uid()));
+  const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
   P().layers.splice(ix, 0, c); S.sel = c.id; commit();
 }
 function deleteLayer(L) {
@@ -151,30 +154,31 @@ function splitAt(L, how) {
   if (how === 'start') L.start = t;
   else if (how === 'end') L.end = t;
   else {
-    const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); c.effects.forEach(f => (f.id = uid()));
+    const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
     c.start = t; L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
   }
   commit();
 }
 function demoProject(aspect = '9:16') {
   const p = newProject(aspect, 'Neon Demo');
+  const fx = (L, id, over = {}) => { const f = makeEffect(id, over); L.effects.push(f); return f; };
   const bg = makeLayer(p, 'solid', { color: '#07051a' }); bg.name = 'Backdrop'; bg.solid.gradient = true; bg.solid.fill2 = '#1a0230'; bg.solid.gradAngle = 90;
   const ring = makeLayer(p, 'shape', { kind: 'ring' }); ring.shape.fill = '#00f0ff'; ring.shape.thickness = 0.12; ring.name = 'Halo';
   setKey(ring, 'scale', 0, 0.2, makeEase('backOut')); setKey(ring, 'scale', 1.2, 1.4);
   setKey(ring, 'rotation', 0, 0, makeEase('linear')); setKey(ring, 'rotation', 6, 360);
-  ring.effects.push(makeEffect('glow'));
+  fx(ring, 'glow', { r: 36, int: 160, color: '#00f0ff', tint: 40 });
   const star = makeLayer(p, 'shape', { kind: 'star' }); star.shape.fill = '#ff2bd6'; star.shape.w = star.shape.h = Math.min(p.w, p.h) * 0.22; star.name = 'Spark';
   setKey(star, 'y', 0, p.h * 0.8, makeEase('expoOut')); setKey(star, 'y', 1.5, p.h * 0.32);
   setKey(star, 'rotation', 0, -180, makeEase('easeInOut')); setKey(star, 'rotation', 1.5, 0);
-  const pulseFx = makeEffect('pulse'); pulseFx.params.amount = 0.08; star.effects.push(pulseFx, makeEffect('glow'));
-  star.effects[1].params.tint = '#ff2bd6';
+  fx(star, 'pulsesize', { amt: 8, freq: 1.5 }); fx(star, 'glow', { r: 30, int: 150, color: '#ff2bd6', tint: 60 });
   const txt = makeLayer(p, 'text', { content: 'KINETIC' }); txt.text.fill = '#eafcff'; txt.name = 'Title';
   setKey(txt, 'opacity', 0.6, 0, makeEase('easeOut')); setKey(txt, 'opacity', 1.4, 1);
   setKey(txt, 'scale', 0.6, 1.6, makeEase('expoOut')); setKey(txt, 'scale', 1.6, 1);
   txt.props.y = p.h * 0.62;
-  const rgb = makeEffect('rgbsplit'); rgb.params.amount = 8; rgb.params.pulse = 1.5; txt.effects.push(rgb, makeEffect('glow'));
-  const adj = makeLayer(p, 'adjust'); adj.name = 'CRT Grade'; adj.effects.push(makeEffect('scanlines'), makeEffect('vignette'));
-  adj.effects[0].params.intensity = 0.25;
+  const rgb = fx(txt, 'rgbsplit', { amt: 8 });
+  setKey(txt, `fx.${rgb.id}.amt`, 0.6, 40, makeEase('expoOut')); setKey(txt, `fx.${rgb.id}.amt`, 1.6, 6);
+  fx(txt, 'glow', { r: 24, int: 110, color: '#9ff6ff', tint: 30 });
+  const adj = makeLayer(p, 'adjust'); adj.name = 'Grade'; fx(adj, 'vignette', { amt: 55, size: 60 }); fx(adj, 'noise', { amt: 8 });
   p.layers = [adj, txt, star, ring, bg];
   return p;
 }
@@ -271,6 +275,7 @@ function drawFrame() {
   syncVideos(P(), S.t, S.playing);
   renderer.render(P(), S.t, view);
   drawOverlay();
+  easeTick();
 }
 
 function toLocal(L, px, py) {
@@ -361,7 +366,7 @@ function snapMove(L, nx, ny) {
 // ---- handle drags: corners scale (uniform; free = per axis), edges scale one axis; size from centre / from edge / freely ----
 const HANDLES = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0]]; // corners (tl tr br bl), then mids (top right bottom left)
 function dimsOf(L) {
-  if (L.type === 'shape' && L.shape.kind !== 'path') return { get: () => [L.shape.w, L.shape.h], set: (w, h) => { L.shape.w = w; L.shape.h = h; } };
+  if (L.type === 'shape' && L.shape.kind !== 'path') return { get: () => [valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)], set: (w, h) => { writeProp(L, 'shape.w', S.t, w); writeProp(L, 'shape.h', S.t, h); } };
   if (L.type === 'shape') { const p0 = L.shape.pts.map(q => q.slice()), b = layerBounds(L, P(), null);
     return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1)]); } }; }
   if (L.type === 'image' || L.type === 'video') return { get: () => [L.media.w, L.media.h], set: (w, h) => { L.media.w = w; L.media.h = h; } };
@@ -548,7 +553,7 @@ function seek(t) {
 let kfNavRaf = 0;
 function updKfNav() { if (kfNavRaf) return; kfNavRaf = requestAnimationFrame(() => { kfNavRaf = 0; if (!P()) return; const ks = keyTimes(); $('#btnKPrev').disabled = !ks.some(t => t < S.t - 1e-4); $('#btnKNext').disabled = !ks.some(t => t > S.t + 1e-4); }); }
 let panelTimer;
-function renderPanelIfTime() { if (['layer', 'ease', 'blend'].includes(S.tab)) { clearTimeout(panelTimer); panelTimer = setTimeout(renderPanel, 60); } }
+function renderPanelIfTime() { if (['layer', 'ease', 'blend', 'fx'].includes(S.tab) && !(S.tab === 'fx' && document.activeElement?.closest?.('#panel .fx-num'))) { clearTimeout(panelTimer); panelTimer = setTimeout(renderPanel, 60); } }
 
 const pad2 = n => String(n).padStart(2, '0');
 const tc = t => { const m = Math.floor(t / 60), s = t - m * 60; return `${pad2(m)}:${s.toFixed(2).padStart(5, '0')}`; };
@@ -574,7 +579,7 @@ function jumpKey(dir) {
   if (t == null) return toast(dir < 0 ? 'No earlier keyframe' : 'No later keyframe');
   seek(t); updateTransport();
 }
-const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
+const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing Curve', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
 const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
 function updateHeader() {
   const p = P(), L = selLayer();
@@ -1029,7 +1034,7 @@ function bindTimelineGestures() {
 }
 // Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
 function lockPage() {
-  const scrollable = t => t.closest?.('.lm-in, .lm-tags, #panelBody, .tiles, .sh-body, .h-scroll, .h-pills, .cr-body, dialog, textarea, select, input');
+  const scrollable = t => t.closest?.('.lm-in, .lm-tags, #panelBody, .tiles, .sh-body, .h-scroll, .h-pills, .cr-body, .fxb-scroll, dialog, textarea, select, input');
   document.addEventListener('touchmove', e => { if (e.cancelable && (e.touches.length > 1 || !scrollable(e.target))) e.preventDefault(); }, { passive: false });
   for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
@@ -1090,16 +1095,16 @@ function renderPanel() {
     case 'style': content = L ? panelStyle(L) : need('Select a layer.'); break;
     case 'edit': content = L ? panelEdit(L) : need('Select a layer.'); break;
     case 'border': content = L ? panelBorder(L) : need('Select a layer.'); break;
-    case 'fx': content = L ? panelFx(L) : need('Select a layer.'); break;
+    case 'fx': if (L) ({ content, left } = panelFx(L)); else content = need('Select a layer.'); break;
     case 'blend': content = L ? panelBlend(L) : need('Select a layer.'); break;
-    case 'ease': content = panelEase(L); break;
+    case 'ease': ({ content, left, right } = fxPanelEase(L)); break;
     case 'presets': content = L ? panelPresets(L) : need('Select a layer.'); break;
     case 'project': content = panelProject(); break;
     case 'points': ({ content, left } = panelPoints(L)); break;
     case 'draw': ({ content, right } = panelDraw(L)); break;
     default: content = h('div');
   }
-  const body = h('div', { id: 'panelBody', class: 'sub-body' + (S.tab === 'points' || S.tab === 'draw' ? ' tool' : '') }, content);
+  const body = h('div', { id: 'panelBody', class: 'sub-body' + (S.tab === 'points' || S.tab === 'draw' || S.tab === 'ease' ? ' tool' : '') + (S.tab === 'fx' ? ' fxbody' : '') + (S.tab === 'ease' ? ' ezbody' : '') }, content);
   panel.replaceChildren(h('div', { class: 'sub' },
     h('div', { class: 'sub-l' }, h('button', { class: 'ib', title: 'Back', 'data-testid': 'panel-back', onclick: goBack }, icon('chevl')), ...left),
     body, right));
@@ -1229,18 +1234,22 @@ function panelEdit(L) {
   const big = Math.max(P().w, P().h) * 1.5;
   if (L.type === 'shape') {
     const s = L.shape;
+    // keyframeable shape geometry (◆ = keyframe at playhead): Width / Height / Corner morph between keys
+    const K = (label, k, min, max, tid) => { const prop = 'shape.' + k; return slider({ label, value: valueAt(L, prop, S.t), min, max, step: 1, testid: tid,
+      onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: () => { commit({ silent: true }); renderTimeline(); },
+      key: { state: propKeyState(L, prop), toggle: () => { const q = findKey(L, prop, S.t); if (q) removeKey(L, prop, q.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } } }); };
     // Size ruler (keeps the aspect) + X / Y boxes on the right
-    const xy = (k, tid) => { const i = h('input', { type: 'number', class: 'num rs-num', min: 1, max: big, step: 1, value: Math.round(s[k]), inputmode: 'numeric', 'data-testid': tid });
-      i.onchange = () => { const v = Math.max(1, Math.min(big, Math.round(+i.value) || 1)); s[k] = v; commit(); }; return i; };
+    const xy = (k, tid) => { const i = h('input', { type: 'number', class: 'num rs-num', min: 1, max: big, step: 1, value: Math.round(valueAt(L, 'shape.' + k, S.t)), inputmode: 'numeric', 'data-testid': tid });
+      i.onchange = () => { const v = Math.max(1, Math.min(big, Math.round(+i.value) || 1)); writeProp(L, 'shape.' + k, S.t, v); commit(); }; return i; };
     const nx = xy('w', 'size-x'), ny = xy('h', 'size-y');
-    const ar = s.h / (s.w || 1);
-    const size = rulerSlider({ label: 'Size', value: Math.round(s.w), min: 1, max: big, step: 10, testid: 'size-ruler',
-      onInput: v => { s.w = Math.round(v); s.h = Math.max(1, Math.round(v * ar)); nx.value = s.w; ny.value = s.h; drawFrame(); }, onChange: () => { commit({ silent: true }); renderTimeline(); },
+    const sw = valueAt(L, 'shape.w', S.t), ar = valueAt(L, 'shape.h', S.t) / (sw || 1);
+    const size = rulerSlider({ label: 'Size', value: Math.round(sw), min: 1, max: big, step: 10, testid: 'size-ruler',
+      onInput: v => { writeProp(L, 'shape.w', S.t, Math.round(v)); writeProp(L, 'shape.h', S.t, Math.max(1, Math.round(v * ar))); nx.value = Math.round(v); ny.value = Math.max(1, Math.round(v * ar)); drawFrame(); }, onChange: () => { commit({ silent: true }); renderTimeline(); },
       right: h('span', { class: 'rs-xy' }, h('em', {}, 'X'), nx, h('em', {}, 'Y'), ny) });
     out.append(section('Size', size));
     out.append(section('Shape', chips(SHAPE_KINDS.map(k => [k, k]), s.kind, v => { s.kind = v; commit(); }),
-      N('Width', s, 'w', 1, big), N('Height', s, 'h', 1, big),
-      s.kind === 'rect' ? N('Corner', s, 'radius', 0, 600) : null,
+      K('Width', 'w', 1, big, 'shape-w'), K('Height', 'h', 1, big, 'shape-h'),
+      s.kind === 'rect' ? K('Corner', 'radius', 0, Math.max(1, Math.round(Math.min(valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)) / 2)), 'shape-radius') : null,
       s.kind === 'star' || s.kind === 'polygon' ? N('Points', s, 'points', 3, 24) : null,
       s.kind === 'star' ? N('Inner', s, 'inner', 0.05, 1, 0.01) : null,
       s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null),
@@ -1286,34 +1295,6 @@ function panelBorder(L) {
     sh.on ? N('Opacity', sh, 'alpha', 0, 1, 0.01) : null));
   return out;
 }
-
-function panelFx(L) {
-  const out = h('div', {});
-  const list = h('div', { class: 'fxlist' });
-  L.effects.forEach((f, i) => {
-    const def = EFFECTS[f.type]; if (!def) return;
-    const params = Object.entries(def.params).map(([k, d]) => {
-      if (d[0] === 'color') return color({ label: d[2], value: f.params[k], onInput: liveSet(v => (f.params[k] = v)), onChange: v => { f.params[k] = v; commit({ silent: true }); } });
-      if (d[0] === 'bool') return toggle({ label: d[2], value: f.params[k], onChange: v => { f.params[k] = v; commit({ silent: true }); drawFrame(); } });
-      if (d[0] === 'select') return select({ label: d[2], value: f.params[k], options: d[3].map(o => [o, o]), onChange: v => { f.params[k] = v; commit({ silent: true }); drawFrame(); } });
-      return slider({ label: d[3], value: f.params[k], min: d[0], max: d[1], step: (d[1] - d[0]) > 20 ? 1 : 0.01, onInput: liveSet(v => (f.params[k] = v)), onChange: () => commit({ silent: true }) });
-    });
-    list.append(h('div', { class: 'fx' + (f.on ? '' : ' off'), 'data-testid': 'fx-' + f.type },
-      h('div', { class: 'fx-h' },
-        h('button', { class: 'tog sm' + (f.on ? ' on' : ''), onclick: () => { f.on = !f.on; commit(); } }, h('i')),
-        h('b', {}, def.name), h('em', {}, def.cat),
-        h('button', { class: 'mini', title: 'Move up', onclick: () => { if (i > 0) { L.effects.splice(i, 1); L.effects.splice(i - 1, 0, f); commit(); } } }, icon('up')),
-        h('button', { class: 'mini', title: 'Remove', onclick: () => { L.effects.splice(i, 1); commit(); } }, icon('trash'))),
-      ...params));
-  });
-  if (L.effects.length) out.append(section(`Stack (${L.effects.length}) · top → bottom`, list));
-  const cats = ['All', ...new Set(Object.values(EFFECTS).map(e => e.cat))];
-  out.append(section('Add Effect', chips(cats.map(c => [c, c]), S.fxCat, v => { S.fxCat = v; renderPanel(); }, 'sm'),
-    h('div', { class: 'grid fxgrid' }, Object.entries(EFFECTS).filter(([, d]) => S.fxCat === 'All' || d.cat === S.fxCat).map(([k, d]) =>
-      h('button', { class: 'fx-add', 'data-testid': 'addfx-' + k, onclick: () => { L.effects.push(makeEffect(k)); commit(); } }, h('b', {}, d.name), h('em', {}, d.cat))))));
-  return out;
-}
-
 
 function panelBlend(L) {
   return h('div', {},
@@ -1448,7 +1429,7 @@ function sheetContent() {
       mediaSources('audio').length ? null : h('div', { class: 'sh-note' }, 'Add your own music or sound effects (MP3, M4A, WAV). They play with the timeline and are mixed into the export.'));
     case 'object': return h('div', { class: 'sh-obj' },
       tile('solid', 'Solid Color', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
-      tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); L.effects.push(makeEffect('coloradj')); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
+      tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
       tile('camera', 'Camera', soon('Camera'), 'add-camera'),
       tile('group', 'Empty Group', soon('Groups'), 'add-group'),
       tile('nullobj', 'Null', soon('Null objects'), 'add-null'),
@@ -1560,7 +1541,7 @@ const readClip = () => readJSON(CLIP_KEY, null);
 const listPresets = () => readJSON(PRESET_KEY, []);
 const savePresets = ps => { try { localStorage.setItem(PRESET_KEY, JSON.stringify(ps)); return true; } catch { toast('Storage full'); return false; } };
 const targets = () => (S.multi.size ? P().layers.filter(l => S.multi.has(l.id)) : selLayer() ? [selLayer()] : []);
-function freshIds(c) { c.id = uid(); for (const p in c.keys || {}) c.keys[p].forEach(k => (k.id = uid())); (c.effects || []).forEach(f => (f.id = uid())); return c; }
+function freshIds(c) { c.id = uid(); for (const p in c.keys || {}) c.keys[p].forEach(k => (k.id = uid())); c.keys = c.keys || {}; c.effects = c.effects || []; migrateLayer(c); renewFxIds(c); return c; }
 // style = fill, border (stroke), shadow, effects, blending, opacity (incl. its keyframes)
 const STYLE_PARTS = [['fill', 'Fill'], ['stroke', 'Border'], ['shadow', 'Shadow'], ['effects', 'Effects'], ['blend', 'Blending'], ['opacity', 'Opacity']];
 function styleOf(L) {
@@ -1679,69 +1660,6 @@ function selectedKeyObjs() {
   const out = [];
   for (const L of P().layers) for (const { prop, k } of allKeys(L)) if (S.selKeys.has(k.id)) out.push({ L, prop, k });
   return out;
-}
-
-function panelEase(L) {
-  const ks = selectedKeyObjs();
-  if (!ks.length) return h('div', { class: 'hint' }, 'Tap a ◆ keyframe on the timeline to edit the easing of the motion leaving it.' + (L && allKeys(L).length ? '' : ' Add keyframes in the Layer tab first.'));
-  const cur = ks[0].k.ease || makeEase('linear');
-  const apply = e => { ks.forEach(({ k }) => (k.ease = clone(e))); commit(); };
-  const out = h('div', {});
-  out.append(h('div', { class: 'hint' }, `${ks.length} keyframe${ks.length > 1 ? 's' : ''} selected · ${[...new Set(ks.map(x => x.prop))].map(p => PROP_META[p].label).join(', ')} @ ${ks[0].k.t.toFixed(2)}s`));
-  out.append(section('Presets', chips(Object.entries(EASE_PRESETS).map(([k, p]) => [k, p.label, 'ease-' + k]), cur.preset, v => apply(makeEase(v)))));
-  out.append(section('Curve', bezierEditor(cur, e => apply(e))));
-  if (cur.type === 'steps') out.append(slider({ label: 'Steps', value: cur.n, min: 2, max: 24, step: 1, onChange: v => apply({ ...cur, n: v }) }));
-  out.append(h('div', { class: 'acts' },
-    h('button', { class: 'act', onclick: () => { const lay = ks[0].L; allKeys(lay).forEach(({ k }) => (k.ease = clone(cur))); commit(); toast('Applied to all keys in layer'); } }, 'Apply to whole layer'),
-    h('button', { class: 'act', onclick: () => { ks.forEach(({ L: lay, prop, k }) => removeKey(lay, prop, k.id)); S.selKeys.clear(); commit(); } }, icon('trash'), 'Delete keys')));
-  return out;
-}
-
-function bezierEditor(ease, onCommit) {
-  const size = 220, pad = 34;
-  const cv = h('canvas', { class: 'bez', width: size * 2, height: size * 2, style: { width: size + 'px', height: size + 'px' }, 'data-testid': 'bezier' });
-  const ctx = cv.getContext('2d'); ctx.scale(2, 2);
-  let bz = (ease.bz || [0.42, 0, 0.58, 1]).slice();
-  const isBez = !ease.type || ease.type === 'bezier';
-  const inner = size - pad * 2;
-  const YMIN = -0.6, YMAX = 1.6, vpad = 10, vin = size - vpad * 2;
-  const toPx = (x, y) => [pad + x * inner, vpad + (YMAX - y) / (YMAX - YMIN) * vin];
-  const fromPx = (px, py) => [Math.max(0, Math.min(1, (px - pad) / inner)), Math.max(YMIN, Math.min(YMAX, YMAX - (py - vpad) / vin * (YMAX - YMIN)))];
-  const draw = () => {
-    ctx.clearRect(0, 0, size, size);
-    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
-    const [, y0] = toPx(0, 0), [, y1] = toPx(0, 1);
-    for (let i = 0; i <= 4; i++) { const [x] = toPx(i / 4, 0); const [, y] = toPx(0, i / 4); ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y0); ctx.stroke(); ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(size - pad, y); ctx.stroke(); }
-    const e = isBez ? { type: 'bezier', bz } : ease;
-    ctx.beginPath(); ctx.strokeStyle = '#00ffa8'; ctx.lineWidth = 2; ctx.shadowBlur = 0;
-    for (let i = 0; i <= 100; i++) { const [x, y] = toPx(i / 100, applyEase(e, i / 100)); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
-    ctx.stroke(); ctx.shadowBlur = 0;
-    if (isBez) {
-      const [a, b] = [toPx(bz[0], bz[1]), toPx(bz[2], bz[3])];
-      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(...toPx(0, 0)); ctx.lineTo(...a); ctx.moveTo(...toPx(1, 1)); ctx.lineTo(...b); ctx.stroke();
-      for (const p of [a, b]) { ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#141720'; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
-    }
-    ctx.fillStyle = 'rgba(234,252,255,.5)'; ctx.font = '9px ui-monospace,monospace';
-    ctx.fillText(isBez ? `cubic-bezier(${bz.map(v => v.toFixed(2)).join(', ')})` : ease.type, 6, 12);
-  };
-  draw();
-  if (isBez) {
-    let drag = -1;
-    cv.addEventListener('pointerdown', e => {
-      const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
-      const a = toPx(bz[0], bz[1]), b = toPx(bz[2], bz[3]);
-      const da = Math.hypot(px - a[0], py - a[1]), db = Math.hypot(px - b[0], py - b[1]);
-      drag = da < db ? 0 : 1; cv.setPointerCapture(e.pointerId);
-    });
-    cv.addEventListener('pointermove', e => {
-      if (drag < 0) return; const r = cv.getBoundingClientRect();
-      const [x, y] = fromPx(e.clientX - r.left, e.clientY - r.top); bz[drag * 2] = +x.toFixed(3); bz[drag * 2 + 1] = +y.toFixed(3); draw();
-    });
-    const up = () => { if (drag >= 0) { drag = -1; onCommit({ preset: 'custom', type: 'bezier', bz: bz.slice() }); } };
-    cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
-  }
-  return h('div', { class: 'bezwrap' }, cv);
 }
 
 function changeResolution(short) {
@@ -2104,6 +2022,7 @@ function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
+  initFxUI({ S, P, selLayer, commit, renderPanel, drawFrame, renderTimeline, refreshAll, selectedKeyObjs });
   buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap(); bindPreviewZoom();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
@@ -2112,7 +2031,7 @@ function boot() {
   if (!/[?&#]editor/.test(location.href)) showHome();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
-  window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect,
+  window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
     selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };

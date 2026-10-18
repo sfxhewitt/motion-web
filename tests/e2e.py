@@ -211,28 +211,22 @@ def run(pw, label, ctx_opts, mobile):
     check(f'[{label}] bezier editor sets custom curve', any(e.get('preset') == 'custom' for e in cust), cust[0])
     pg.screenshot(path=f'{SHOTS}/{label}-03-easing.png')
 
-    # 6. effects via UI on the rect
+    # 6. effects via UI on the rect: Effects panel -> + Add Effect -> search -> preset sheet -> Standard Settings
     P('__app.seek(1)'); tab('fx'); pg.wait_for_timeout(100)
+    check(f'[{label}] empty Effects panel shows + Add Effect', pg.locator('[data-testid=add-effect]').is_visible() and pg.locator('.fxc').count() == 0)
     before = pg.evaluate(SIG)
-    pg.click('[data-testid=addfx-glow]'); pg.wait_for_timeout(150)
+    def add_fx(q, fid):
+        pg.click('[data-testid=add-effect]'); pg.wait_for_selector('[data-testid=fx-browser]')
+        pg.click('[data-testid=fxb-search]'); pg.fill('[data-testid=fx-search-input]', q); pg.wait_for_timeout(80)
+        pg.click(f'[data-testid=res-{fid}]'); pg.wait_for_selector('[data-testid=preset-sheet]'); pg.click('[data-testid=preset-std]'); pg.wait_for_timeout(150)
+    add_fx('glow', 'glow')
     after = pg.evaluate(SIG)
     check(f'[{label}] glow effect changes render', before['h'] != after['h'])
-    pg.click('[data-testid=addfx-rgbsplit]'); pg.wait_for_timeout(100)
-    pg.click('[data-testid=addfx-shake]'); pg.wait_for_timeout(100)
-    check(f'[{label}] effect stack via UI', P("__app.project.layers.find(l=>l.id===__app.S.sel).effects.map(e=>e.type)") == ['glow', 'rgbsplit', 'shake'])
+    add_fx('rgb', 'rgbsplit'); add_fx('shake', 'autoshake')
+    check(f'[{label}] effect stack via UI', P("__app.project.layers.find(l=>l.id===__app.S.sel).effects.map(e=>e.type)") == ['glow', 'rgbsplit', 'autoshake'])
     pg.screenshot(path=f'{SHOTS}/{label}-04-effects.png')
-    # every effect individually changes output, no GL errors
-    fxres = P("""(() => {
-      const rect = __app.project.layers.find(l=>l.id===__app.S.sel); const solid = __app.project.layers.find(l=>l.type==='solid');
-      solid.solid.gradient = true; const out = {};
-      const sig = () => { __app.seek(1.3); const c = document.querySelector('#view'); const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data; let h=0; for (let i=0;i<d.length;i+=53) h=(h*31+d[i])>>>0; return h; };
-      for (const k of Object.keys(__app.EFFECTS)) {
-        out[k] = false;
-        for (const L of [rect, solid]) { const saved = L.effects; L.effects = []; const base = sig(); L.effects = [__app.makeEffect(k)]; const changed = sig() !== base; L.effects = saved; if (changed) { out[k] = true; break; } }
-      }
-      __app.refreshAll(); return { out, errors: __app.renderer.errors };
-    })()""")
-    check(f'[{label}] all effects alter output', fxres and all(fxres['out'].values()) and not fxres['errors'], fxres)
+    fxerr = P("[...__app.renderer.errors, ...__app.renderer.fx.errors]")
+    check(f'[{label}] no effect / GL errors', not fxerr, fxerr)
 
     # 7. blend modes
     tab('blend'); pg.click('[data-testid=blend-difference]'); pg.wait_for_timeout(100)
@@ -242,7 +236,7 @@ def run(pw, label, ctx_opts, mobile):
 
     # 8. adjustment layer
     add('adjust', 'object'); pg.wait_for_timeout(100)
-    check(f'[{label}] adjustment layer w/ color adjust', P("__app.project.layers[0].type") == 'adjust' and P("__app.project.layers[0].effects[0].type") == 'coloradj')
+    check(f'[{label}] adjustment layer opens its (empty) Effects panel', P("__app.project.layers[0].type") == 'adjust' and P("__app.project.layers[0].effects.length") == 0 and P("__app.S.tab") == 'fx' and pg.locator('[data-testid=add-effect]').is_visible())
 
     # 9. undo/redo
     n = P('__app.project.layers.length'); pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)

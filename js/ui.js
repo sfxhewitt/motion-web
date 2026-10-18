@@ -176,5 +176,11 @@ export const ICONS = {
   export: '<path d="M12 15V3M7 8l5-5 5 5M4 14v6h16v-6"/>',
   loop: '<path d="M17 3l3 3-3 3M20 6H8a4 4 0 0 0-4 4v1M7 21l-3-3 3-3M4 18h12a4 4 0 0 0 4-4v-1"/>',
   layer: '<path d="M12 3 21 8l-9 5-9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  // effects / easing
+  graph: '<rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><path d="M6.5 17.5c5 0 5-11 11-11"/>',
+  swap: '<path d="M4 8.5h13.5M14 5l3.5 3.5L14 12"/><path d="M20 15.5H6.5M10 12l-3.5 3.5L10 19"/>',
+  easecurve: '<path d="M4 20c9 0 7-16 16-16"/><circle cx="4" cy="20" r="1.4" fill="currentColor"/><circle cx="20" cy="4" r="1.4" fill="currentColor"/>',
+  easephys: '<path d="M3 20c1.5-6 2.5-15 4-15s1.6 8 3 8 1.7-5 3-5 1.5 3 2.6 3 1.4-2 2.4-2 1.2 1 3 1"/><path d="M3 20h18" stroke-width="1"/>',
+  easesteps: '<path d="M3.5 20h4v-4h4v-4h4V8h4V4"/>',
 };
 export const icon = (n, cls = '') => h('span', { class: 'ico ' + cls, html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ''}</svg>` });

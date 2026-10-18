@@ -74,7 +74,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v10', "'kntc-v10'" in sw)
+        check('service worker cache bumped to kntc-v11', "'kntc-v11'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4):
