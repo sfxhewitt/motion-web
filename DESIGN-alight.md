@@ -74,7 +74,7 @@ Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and 
 
 ## Knowingly different
 - Name, logo, icons and shape set are KINETIC's own; no watermark, music or template library.
-- Camera, Empty Group, Null, Elements, Templates browse, Presets, Speed and Smudge are "coming soon" toasts.
+- Camera, Empty Group, Null, Elements, Templates browse, Speed and Smudge are "coming soon" toasts.
 - Edit Points is simplified (straight segments, no bezier handles); no preview zoom (magnifier) button.
 - Selection overlay keeps a rotate handle + square scale handle (Alight shows only dots).
 - Keyframe easing editor (bezier) is KINETIC's own.
@@ -102,3 +102,21 @@ name field with clear button and underline, ratio chips 16:9 · 9:16 · 4:5 · 1
 outlines), Resolution / Frame Rate / Background dropdowns (232×44, r12) and a 52pt "Create from scratch" button.
 The Create sheet really creates the project: resolution = short side (480–2160), fps and background colour
 are stored on the project; export defaults to the project's resolution and fps.
+
+## Timeline layer rows (v9 — matched to `reference/15-timeline-layers.jpg`, 1320×2868 = 3× of 440pt)
+| Item | Value |
+|---|---|
+| row pitch | 32pt (96px) |
+| pill | 69×29pt, `#262835`, radius 0 14.5 14.5 0, 3pt gap; eye 22pt at x≈17, thumbnail 21pt at x≈48 = the layer's own shape/media in its colours on transparent |
+| clip | 26pt tall, 6pt gap, `#65abcd` + `rgba(255,255,255,.035)` 10/20pt stripes, 2.5pt radius, 1px `#072235` outline, name 14/500 white, 6pt inset |
+| media clip | filmstrip of the media at its own aspect, clip height, 3px dark gap |
+| ☰ handle | pinned 4pt from the right edge of the view (sticky), 3 bars 14×2.2 gap 5; grey `#4a4c58` over empty track, black@40% over a clip; vertical drag reorders right away, horizontal swipe pans |
+| ruler band | opaque to 29pt, fades out by 38pt so rows scrolled up show under the timecode |
+Newest layer is the top row; the list scrolls vertically.
+
+## ⧉ copy menu (v9 — `reference/16-copy-menu.jpg`)
+245pt wide, `#35374e`, radius 20, 10pt from the right edge, arrow pointing down at ⧉; rows 45pt with 1px `#1f2233`
+dividers, 26pt outline icons (dotted squares = clipboard), 17pt labels, disabled `#717284`, NEW badge `#f7cc4a`.
+Select All Layers (multi-select, clips outlined white) · Duplicate Layer · Copy Layer (including style) · Save Preset
+(→ Presets tile) · Paste Layer (on top) · Paste Style ▸ All / Fill / Border / Shadow / Effects / Blending / Opacity.
+Clipboard `kntc.clipboard` and presets `kntc.presets` live in localStorage.

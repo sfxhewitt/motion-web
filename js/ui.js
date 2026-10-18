@@ -69,6 +69,14 @@ export function toast(msg, ms = 1800) {
 export const ICONS = {
   back: '<path d="M15 4.5 7.5 12l7.5 7.5"/>',
   chevl: '<path d="M14 6l-6 6 6 6"/>',
+  chevr: '<path d="M10 6l6 6-6 6"/>',
+  // ⧉ copy menu (reference/16): outline icons, dotted squares = clipboard
+  selall: '<path d="M3.5 5.5h9.5a3.6 3.6 0 0 1 1.2 7"/><path d="M3.5 12h6.5M3.5 18.5h6"/><path d="M12.6 12.4h2.4a3.4 3.4 0 0 1 0 6.8h-1.2"/><path d="M11.2 16.4l1.9 1.9 3.4-3.6"/>',
+  'cm-dup': '<rect x="3.5" y="8" width="12" height="12" rx="2.5"/><path d="M8.5 8V6a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 20.5 6v7a2.5 2.5 0 0 1-2.5 2.5h-2.5"/><path d="M14.5 6.5v6M11.5 9.5h6"/>',
+  'cm-copy': '<path d="M9 10.5H5.5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V15"/><rect x="9" y="3.5" width="11.5" height="11.5" rx="2" stroke-dasharray="0.1 2.2"/><path d="M12.5 11.5l5-5M13.5 6.5h4v4"/><path d="M8 14.6c-.5-.6-2.6-.7-2.6.6 0 1.4 2.8.9 2.8 2.4 0 1.3-2.3 1.2-3 .5" stroke-width="1.3"/>',
+  'cm-preset': '<path d="M9 10.5H5.5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V15"/><rect x="9" y="3.5" width="11.5" height="11.5" rx="2" stroke-dasharray="0.1 2.2"/><path d="M12.5 11.5l5-5M13.5 6.5h4v4"/><path d="M6.6 14.4l.7 1.5 1.6.2-1.2 1.1.3 1.6-1.4-.8-1.4.8.3-1.6-1.2-1.1 1.6-.2Z" stroke-width="1.1"/>',
+  'cm-paste': '<rect x="3.5" y="9" width="11.5" height="11.5" rx="2" stroke-dasharray="0.1 2.2"/><path d="M9 9V5.5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 2 2V13a2 2 0 0 1-2 2H15"/><path d="M16.5 7l-5 5M11.5 8v4h4"/>',
+  'cm-pstyle': '<rect x="3.5" y="9" width="11.5" height="11.5" rx="2" stroke-dasharray="0.1 2.2"/><path d="M9 9V5.5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 2 2V13a2 2 0 0 1-2 2H15"/><path d="M15.5 8l-4.5 4.5M11 9v3.5h3.5"/><path d="M19 4.9c-.4-.5-2-.5-2 .5s2.2.7 2.2 1.8c0 1-1.8.9-2.3.4" stroke-width="1.2"/>',
   gear: '<path d="M10.3 3h3.4l.5 2.4 1.7 1 2.3-.8 1.7 2.9-1.8 1.6v2l1.8 1.6-1.7 2.9-2.3-.8-1.7 1-.5 2.4h-3.4l-.5-2.4-1.7-1-2.3.8-1.7-2.9 1.8-1.6v-2L3.9 8.5l1.7-2.9 2.3.8 1.7-1Z"/><circle cx="12" cy="12" r="3"/>',
   share: '<path d="M12 14.5V3.5M8 7.5l4-4 4 4"/><path d="M8.5 10.5H6v9.5h12v-9.5h-2.5"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',

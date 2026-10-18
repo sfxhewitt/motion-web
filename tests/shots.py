@@ -6,7 +6,8 @@ BASE = os.environ.get('BASE', 'http://localhost:8765/'); OUT = '/workspace/kntc-
 REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'reference')
 PAIRS = [('editor', '01-editor'), ('add-shape', '02-add-shape'), ('add-media', '03-add-media'), ('add-audio', '04-add-audio'),
          ('add-object', '05-add-object'), ('add-template', '06-add-template'), ('layer-selected', '07-layer-selected'),
-         ('edit-points', '08-edit-points'), ('drawing', '09-drawing'), ('home', '10-home'), ('create', '11-create'), ('layer-menu', '14-layer-menu')]
+         ('edit-points', '08-edit-points'), ('drawing', '09-drawing'), ('home', '10-home'), ('create', '11-create'), ('layer-menu', '14-layer-menu'),
+         ('timeline-layers', '15-timeline-layers'), ('copy-menu', '16-copy-menu')]
 os.makedirs(OUT, exist_ok=True)
 with sync_playwright() as pw:
     b = pw.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader'])
@@ -56,6 +57,24 @@ with sync_playwright() as pw:
     pg.locator('[data-testid=swatch]').nth(0).click()
     stroke([(0.3, 0.62), (0.45, 0.72), (0.6, 0.6), (0.72, 0.7)])
     shot('drawing')
+    # multi-layer timeline like reference/15: a photo layer (our own editor shot) + five shapes, nothing selected, playhead mid-way
+    pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(100)
+    if P("document.body.dataset.mode") != 'none': pg.click('[data-testid=btn-back]')
+    P("""(() => { const a = __app; const p = a.demoProject('9:16'); p.name = 'Project Name 2'; p.layers = []; p.duration = 10; a.setProject(p); })()"""); pg.wait_for_timeout(200)
+    pg.set_input_files('[data-testid=file-media]', f'{OUT}/editor.png'); pg.wait_for_timeout(900)
+    P("""(() => { const a = __app, p = a.project;
+      const T = 26 / 30, K = 234, px = d => T + d / K; // playhead at frame 26, ~one ruler tick per frame
+      const mk = (kind, name, fill, s0, s1) => { const L = a.makeLayer(p, 'shape', { kind, fill }); L.name = name; L.start = s0; L.end = s1; if (kind === 'rect') L.shape.radius = L.shape.w * 0.12; p.layers.unshift(L); return L; };
+      const img = p.layers[0]; img.start = 0; img.end = px(170);
+      mk('rect', 'Rounded Rectangle 1', '#df4f96', px(-15.4), 10); mk('ellipse', 'Circle 1', '#7a40e0', px(-70), 10);
+      mk('polygon', 'Polygon 1', '#ee82e8', px(180), 10); mk('star', 'Star 1', '#8d8a78', px(84.5), 10); mk('arrow', 'Arrow 1', '#d9b36c', px(84.5), 10);
+      a.S.sel = null; a.S.multi.clear(); a.S.tab = null; a.S.autoFit = false; a.S.pps = K; a.S.t = T; a.commit(); a.seek(T);
+      const tl = document.getElementById('tlScroll'); tl.scrollTop = 29; })()"""); pg.wait_for_timeout(300)
+    shot('timeline-layers', 500)
+    # ⧉ copy menu with nothing selected and an empty clipboard (only Select All Layers is active, as in reference/16)
+    P("localStorage.removeItem('kntc.clipboard')")
+    pg.click('[data-testid=copy-layer]'); shot('copy-menu', 400)
+    pg.keyboard.press('Escape'); pg.wait_for_timeout(150)
     b.close()
     print('page errors:', errs)
 

@@ -74,7 +74,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v8', "'kntc-v8'" in sw)
+        check('service worker cache bumped to kntc-v9', "'kntc-v9'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4):
@@ -147,7 +147,7 @@ def main():
         # 7. keyframes: 44px hit box, swipe pans, long press drags
         reset_scroll(); Lk = layer(ki)
         TOROW = """(id) => { const t = document.getElementById('tlScroll'), r = document.querySelector(`.tl-row[data-layer="${id}"]`); t.scrollTop += r.getBoundingClientRect().top - t.getBoundingClientRect().top - 48; return t.scrollTop; }"""
-        P(TOROW, Lk['id']); pg.wait_for_timeout(50)
+        P(TOROW, Lk['id']); P(f"(() => {{ const t = document.getElementById('tlScroll'), k = document.querySelector('.tl-row[data-layer=\"{Lk['id']}\"] .kf').getBoundingClientRect(), r = t.getBoundingClientRect(); t.scrollTop -= 10; t.scrollLeft += k.left + k.width / 2 - (r.left + r.width / 2) + 60; }})()"); pg.wait_for_timeout(50)  # 32px rows: keep the 44px box clear of the sticky ruler band
         kbox = P(KBOX, Lk['id']); hit44 = kbox['hit44']
         check('keyframe touch target is 44px', kbox['w'] >= 44 and hit44, kbox)
         kpt = P(FIND, ['.kf', Lk['id']])
@@ -221,7 +221,9 @@ def main():
         # empty track point (not on a clip/key) in the given layer row
         EMPTY = """([id, xmin]) => { const row = document.querySelector(`.tl-row[data-layer="${id}"] .tl-track`); const r = row.getBoundingClientRect(), y = r.top + r.height / 2;
           const tl = document.getElementById('tlScroll').getBoundingClientRect();
-          for (const yy of [y, r.top + 2, r.bottom - 2]) for (let x = Math.max(xmin, tl.left + 100); x < tl.right - 70; x += 4) { const h = document.elementFromPoint(x, yy); if (h === row) return { x, y: yy }; } return null; }"""
+          for (const yy of [y, r.top + 2, r.bottom - 2]) for (let x = Math.max(xmin, tl.left + 100); x < tl.right - 70; x += 4) { const h = document.elementFromPoint(x, yy); if (h === row) return { x, y: yy }; }
+          // 32px rows: a selected clip fills its row, so fall back to the row's own empty space left of t = 0 (beside the pill)
+          for (let x = Math.max(xmin, tl.left + 80); x < tl.right - 70; x += 4) { const h = document.elementFromPoint(x, y); if (h === row.parentElement) return { x, y }; } return null; }"""
         rows = P("__app.project.layers.map(l => l.id)")
         ept = P(EMPTY, [rows[0], 0])
         for _ in range(7):
@@ -355,6 +357,47 @@ def main():
         reset_scroll()
         tap(pad['x'], pad['y']); b4 = P('__app.S.sel')
         check('timeline: pan / long press on empty space and taps on the ruler keep the selection; a short tap deselects', b1 == lid and b2 == lid and b3 == lid and b4 is None, (b1, b2, b3, b4))
+        # ---- Alight row geometry (reference/15 at 3x): 32px pitch, 29px pill (3px gap), 26px clip (6px gap), ☰ handle pinned right ----
+        P("""(() => { const a = __app, p = a.demoProject('9:16'); a.setProject(p); for (let i = 0; i < 4; i++) a.addLayer(a.makeLayer(a.project, 'shape', { kind: 'rect' }));
+          a.S.sel = null; a.S.multi.clear(); a.S.tab = null; a.S.autoFit = false; a.S.pps = 60; a.seek(0.5); a.refreshAll(); })()"""); pg.wait_for_timeout(250); reset_scroll()
+        geo = P("""(() => { const rows = [...document.querySelectorAll('.tl-row[data-layer]')], R = e => e.getBoundingClientRect();
+          const a = rows[0], b = rows[1], pa = R(a.querySelector('.tl-label')), pb = R(b.querySelector('.tl-label')), ca = R(a.querySelector('.clip')), cb = R(b.querySelector('.clip'));
+          const tl = R(document.getElementById('tlScroll')), hd = R(a.querySelector('.tl-hd')), cs = getComputedStyle(a.querySelector('.clip')), ps = getComputedStyle(a.querySelector('.tl-label'));
+          return { pitch: R(b).top - R(a).top, pillH: pa.height, pillGap: pb.top - pa.bottom, clipH: ca.height, clipGap: cb.top - ca.bottom, pillW: pa.width,
+            pillR: ps.borderTopRightRadius, pillBg: ps.backgroundColor, clipBg: cs.backgroundColor, clipImg: cs.backgroundImage.slice(0, 26), hdRight: tl.right - hd.right, hdW: hd.width,
+            pillCentre: (pa.top + pa.bottom) / 2 - (ca.top + ca.bottom) / 2, thumb: !!a.querySelector('.tl-label img.th'), name: a.querySelector('.clip .cn').textContent }; })()""")
+        check('rows: 32px pitch, 29px pill + 3px gap, 26px clip + 6px gap, pill centred on clip', geo['pitch'] == 32 and abs(geo['pillH'] - 29) < .01 and abs(geo['pillGap'] - 3) < .01 and geo['clipH'] == 26 and geo['clipGap'] == 6 and abs(geo['pillCentre']) < .6, geo)
+        check('pill: dark slate, rounded right edge, eye + shape thumbnail', geo['pillBg'] == 'rgb(38, 40, 53)' and geo['pillR'] == '14.5px' and geo['thumb'] and 66 <= geo['pillW'] <= 72, geo)
+        check('clip: sampled teal with subtle vertical stripes, layer name inside', geo['clipBg'] == 'rgb(101, 171, 205)' and geo['clipImg'].startswith('repeating-linear-gradient') and geo['name'], geo)
+        check('☰ handle pinned at the right edge of the view', 0 <= geo['hdRight'] <= 8 and geo['hdW'] >= 28, geo)
+        sl0 = P(STATE)['sl']; P("document.getElementById('tlScroll').scrollLeft += 300"); pg.wait_for_timeout(80)
+        hd2 = P("(() => { const t = document.getElementById('tlScroll').getBoundingClientRect(), h = document.querySelector('.tl-row[data-layer] .tl-hd').getBoundingClientRect(); return t.right - h.right; })()")
+        check('☰ handle stays pinned while the timeline pans', abs(hd2 - geo['hdRight']) < 1, (geo['hdRight'], hd2))
+        reset_scroll()
+        # thumbnails show the layer's own shape/colour: centre pixel of a rect pill thumbnail matches its fill
+        thc = P("""new Promise(res => { const L = __app.project.layers.find(l => l.type === 'shape' && l.shape.kind === 'rect'); const img = document.querySelector(`.tl-row[data-layer="${L.id}"] img.th`);
+          const go = () => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+            const d = g.getImageData(c.width / 2, c.height / 2, 1, 1).data, corner = g.getImageData(1, 1, 1, 1).data; res({ fill: L.shape.fill, px: [d[0], d[1], d[2]], cornerA: corner[3] }); };
+          img.complete ? go() : (img.onload = go); })""")
+        hx = thc['fill'].lstrip('#'); want = [int(hx[i:i + 2], 16) for i in (0, 2, 4)]
+        check('pill thumbnail is the actual shape in its colour on a transparent tile', all(abs(a - b) < 12 for a, b in zip(thc['px'], want)) and thc['cornerA'] == 0, (thc, want))
+        # ☰ handle: vertical drag reorders right away (no long press); a horizontal swipe on it still pans
+        ids0 = P("__app.project.layers.map(l => l.id)")
+        hp = P(f"(() => {{ const h = document.querySelector('.tl-row[data-layer=\"{ids0[0]}\"] .tl-hd').getBoundingClientRect(); return {{ x: h.left + h.width / 2, y: h.top + h.height / 2 }}; }})()")
+        gesture([(hp['x'], hp['y'], hp['x'], hp['y'] + 2 * 32 + 4)], steps=12, dt=20); pg.wait_for_timeout(300)
+        ids1 = P("__app.project.layers.map(l => l.id)")
+        check('☰ drag down two rows moves the layer two places down the stack', ids1[2] == ids0[0] and ids1[0] == ids0[1] and ids1[1] == ids0[2] and sorted(ids1) == sorted(ids0), (ids0[:4], ids1[:4]))
+        P("__app.project.layers.unshift(__app.project.layers.splice(2, 1)[0]); __app.commit()"); pg.wait_for_timeout(150); reset_scroll()
+        sA = P(STATE); gesture([(hp['x'], hp['y'], hp['x'] - 140, hp['y'] + 3)], steps=10, dt=20); pg.wait_for_timeout(200); settle(); sB = P(STATE)
+        check('horizontal swipe starting on ☰ pans and does not reorder', sB['sl'] > sA['sl'] + 80 and P("__app.project.layers.map(l => l.id)") == ids0, (sA['sl'], sB['sl']))
+        # Select All Layers (⧉ menu) outlines every clip; a tap on empty timeline space clears it
+        reset_scroll(); pg.click('[data-testid=copy-layer]'); pg.wait_for_timeout(150); pg.click('[data-testid=cm-select-all]'); pg.wait_for_timeout(200)
+        ms = P("[__app.S.multi.size, __app.project.layers.length, document.querySelectorAll('.clip.msel').length]")
+        check('Select All Layers selects every layer (all clips outlined)', ms[0] == ms[1] and ms[2] == ms[1], ms)
+        P("document.getElementById('tlScroll').scrollTop = 1e6"); pg.wait_for_timeout(60)
+        pad = P("(() => { const r = document.querySelector('[data-testid=tl-pad] .tl-track').getBoundingClientRect(), tl = document.getElementById('tlScroll').getBoundingClientRect(); return { x: tl.left + 260, y: Math.min(r.bottom, tl.bottom) - 12 }; })()")
+        tap(pad['x'], pad['y'])
+        check('tap on empty timeline space clears the multi-selection', P('__app.S.multi.size') == 0)
         check('no page errors', not [e for e in errs if 'GL Driver' not in e], errs[:5])
         b.close()
 

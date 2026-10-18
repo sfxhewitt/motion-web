@@ -8,13 +8,13 @@ import { $, h, slider, color, toggle, select, chips, section, toast, icon } from
 
 // ---------------- state ----------------
 // tab: null (nothing / tile grid when a layer is selected) | 'add' (add sheet) | a sub panel id (see SUB_TITLE)
-const S = { project: null, t: 0, playing: false, sel: null, selKeys: new Set(), tab: null, addTab: 'shape', pps: 60, autoFit: false, loop: true, fxCat: 'All',
+const S = { project: null, t: 0, playing: false, sel: null, multi: new Set(), selKeys: new Set(), tab: null, addTab: 'shape', pps: 60, autoFit: false, loop: true, fxCat: 'All',
   draw: { tool: 'pencil', size: 16, color: '#0000ff' }, cursor: null, picking: false, full: false };
 const history = new History();
 const renderer = new Renderer();
 const view = $('#view'), overlay = $('#overlay'), stage = $('#stage');
 let viewScale = 1; // css px per project px
-const PILL_W = 70, HEAD_H = 48, ROW_H = 40; // timeline: layer pill width, ruler+timecode band, row pitch
+const PILL_W = 70, HEAD_H = 48, ROW_H = 32; // timeline: layer pill width, ruler+timecode band, row pitch
 const ACCENT = '#00ffa8';
 
 const P = () => S.project;
@@ -31,7 +31,7 @@ function commit(opts = {}) {
 let saveTimer;
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (!store.saveProject(P())) toast('Storage full — export JSON to keep work'); }, 350); }
 
-function refreshAll() { if (layerMenu && !selLayer()) closeLayerMenu(); layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
+function refreshAll() { if (layerMenu && !selLayer()) closeLayerMenu(); closeCopyMenu(); layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
 
 // body[data-mode] drives the top bar / bottom zone (none: timeline + FAB, sel: tile grid, sub: property panel)
 function layoutChrome() {
@@ -96,21 +96,21 @@ async function importAudioFile(file) {
 
 // ---------------- project ops ----------------
 function setProject(p, { resetHistory = true } = {}) {
-  S.project = p; S.sel = null; S.selKeys.clear(); S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
+  S.project = p; S.sel = null; S.multi.clear(); S.selKeys.clear(); S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
   if (resetHistory) history.reset(p);
   store.saveProject(p); hydrateMedia(p); refreshAll();
 }
 // new layers go on TOP of the stack (index 0 = top of the layer list = rendered last / in front)
 function addLayer(L, { tab = null } = {}) {
-  P().layers.unshift(L); S.sel = L.id; S.selKeys.clear(); S.tab = tab;
+  P().layers.unshift(L); S.sel = L.id; S.multi.clear(); S.selKeys.clear(); S.tab = tab;
   commit();
 }
 function selectLayer(id) {
-  S.sel = id; S.selKeys.clear();
+  S.sel = id; S.multi.clear(); S.selKeys.clear();
   if (S.tab === 'add' || ['project', 'points', 'draw', 'edit'].includes(S.tab)) S.tab = null;
   refreshAll();
 }
-function deselect() { S.sel = null; S.selKeys.clear(); if (S.tab !== 'project') S.tab = null; refreshAll(); }
+function deselect() { S.sel = null; S.multi.clear(); S.selKeys.clear(); if (S.tab !== 'project') S.tab = null; refreshAll(); }
 function goBack() {
   if (S.full) { S.full = false; return refreshAll(); }
   if (S.tab === 'add') { S.tab = null; return refreshAll(); }
@@ -395,7 +395,7 @@ function updateTransport() {
   $('#btnFit').classList.toggle('on', S.full);
   updateTC();
 }
-const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
+const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
 const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
 function updateHeader() {
   const p = P(), L = selLayer();
@@ -430,6 +430,7 @@ function syncScroll() {
 let syncRaf = 0;
 function onTlScroll() {
   if (!P() || G.rendering) return;
+  updHandles();
   if (S.playing && !(G.g || G.mom || G.pinch)) return; // playback drives the scroll, not the other way round
   const want = S.t * S.pps, dur = P().duration;
   if (Math.abs(tl.scrollLeft - want) < 1) return;
@@ -446,7 +447,7 @@ function contentEnd(p = P()) {
 }
 const MAX_INNER_PX = 400000;
 const majStep = () => (S.pps >= 24 ? 1 : S.pps >= 8 ? 5 : 10);
-const minStep = () => (S.pps >= 50 ? 0.1 : S.pps >= 24 ? 0.25 : majStep() / 5);
+const minStep = () => (S.pps >= 150 ? 1 / (P()?.fps || 30) : S.pps >= 50 ? 0.1 : S.pps >= 24 ? 0.25 : majStep() / 5);
 function addTicks(ruler, from, to) {
   const step = majStep();
   for (let i = Math.ceil(from / step - 1e-6); i * step <= to + 1e-6; i++) {
@@ -496,6 +497,44 @@ function layerThumb(L) {
   THUMB.cache.set(key, url);
   return url;
 }
+// pill icon (Alight): the layer's own shape / media in its real colours on a transparent tile, fitted to a square
+function pillThumb(L) {
+  if (L.type === 'audio' || L.type === 'adjust' || L.type === 'text') return null;
+  const p = P(), key = 'pill' + JSON.stringify([p.w, p.h, L.type, L.shape, L.solid, L.media?.id, L.media?.w, L.media?.h, L.draw, L.flipX, L.flipY, media.has(L.media?.id)]);
+  if (THUMB.cache.has(key)) return THUMB.cache.get(key);
+  let url = null;
+  try {
+    const N = 60, c = document.createElement('canvas'); c.width = c.height = N;
+    const b = L.type === 'shape' ? layerBounds(L, p, c.getContext('2d')) : L.type === 'image' || L.type === 'video' ? { w: L.media.w, h: L.media.h } : { w: p.w, h: p.h };
+    const k = (L.type === 'shape' ? 0.94 : 1) * N / Math.max(1, b.w, b.h);
+    if (L.type === 'solid') { const g = c.getContext('2d'); g.fillStyle = L.solid.color; g.beginPath(); g.roundRect?.(N * 0.1, N * 0.1, N * 0.8, N * 0.8, 6); g.fill(); }
+    else {
+      THUMB.r = THUMB.r || new Renderer();
+      const q = { ...p, w: N, h: N, bg: 'rgba(0,0,0,0)', layers: [{ ...L, effects: [], keys: {}, visible: true, start: 0, end: 1e9, blend: 'normal', shadow: null, clip: false,
+        props: L.type === 'draw' ? { x: N / 2 - p.w * k / 2, y: N / 2 - p.h * k / 2, scale: k, rotation: 0, opacity: 1 } : { x: N / 2, y: N / 2, scale: k, rotation: 0, opacity: 1 } }] };
+      THUMB.r.render(q, 0, c);
+    }
+    url = c.toDataURL();
+  } catch (e) { console.warn(e); }
+  THUMB.cache.set(key, url);
+  return url;
+}
+// filmstrip frame for photo / video clips: the media at its own aspect, clip height, with a dark gap between frames
+function stripThumb(L) {
+  const key = 'strip' + JSON.stringify([L.media?.id, L.media?.w, L.media?.h, media.has(L.media?.id)]);
+  if (THUMB.cache.has(key)) return THUMB.cache.get(key);
+  let url = null;
+  try {
+    const H = 52, ar = Math.max(0.3, Math.min(3, (L.media.w || 1) / (L.media.h || 1))), W = Math.round(H * ar), G = 3, c = document.createElement('canvas');
+    c.width = W + G; c.height = H;
+    const el = media.get(L.media?.id)?.el, g = c.getContext('2d');
+    g.fillStyle = '#2b2f42'; g.fillRect(0, 0, W, H);
+    if (el) try { g.drawImage(el, 0, 0, W, H); } catch {}
+    url = c.toDataURL();
+  } catch (e) { console.warn(e); }
+  THUMB.cache.set(key, url);
+  return url;
+}
 const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio' };
 function renderTimeline() {
   const p = P(); if (!p) return;
@@ -516,14 +555,14 @@ function renderTimeline() {
   inner.append(h('div', { class: 'tl-head' }, ruler));
   bindScrub(ruler);
   for (const L of p.layers) {
-    const sel = L.id === S.sel, th = layerThumb(L);
+    const sel = L.id === S.sel, msel = S.multi.has(L.id), th = pillThumb(L), isMedia = L.type === 'image' || L.type === 'video';
     const label = h('div', { class: 'tl-label', onclick: () => selectLayer(L.id) },
       h('button', { class: 'vis' + (L.visible ? '' : ' off'), title: 'Visibility', 'data-testid': 'vis', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
-      th ? h('img', { class: 'th', src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
+      th ? h('img', { class: 'th' + (isMedia ? ' m' : ''), src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
     const track = h('div', { class: 'tl-track' });
-    const strip = (L.type === 'image' || L.type === 'video') && th ? { backgroundImage: `url(${th})` } : {};
+    const st = isMedia ? stripThumb(L) : null, strip = st ? { backgroundImage: `url(${st})` } : {};
     const tag = L.tag ? { '--tag': L.tag } : {};
-    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : '') + (L.tag ? ' tagged' + (isLight(L.tag) ? ' lt' : '') : ''),
+    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (msel ? ' msel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : '') + (L.tag ? ' tagged' + (isLight(L.tag) ? ' lt' : '') : ''),
       'data-tag': L.tag || null, style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip, ...tag } },
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
     bindClip(clip, L);
@@ -536,7 +575,10 @@ function renderTimeline() {
       const d = h('i', { class: 'kf' + (on ? ' on' : ''), style: { left: (+tk) * S.pps + 'px' }, 'data-testid': 'kf' });
       bindKey(d, L, list); track.append(d);
     }
-    inner.append(h('div', { class: 'tl-row' + (sel ? ' sel' : '') + (L.clip && layerBelow(L) ? ' clipped' : ''), 'data-layer': L.id }, label, track));
+    // ☰ reorder handle: pinned to the right edge of the view (sticky), drawn dark over a clip and grey over empty track
+    const hd = h('div', { class: 'tl-hd', title: 'Drag to reorder', 'data-testid': 'reorder' }, h('i'), h('i'), h('i'));
+    bindReorderMouse(hd, L);
+    inner.append(h('div', { class: 'tl-row' + (sel || msel ? ' sel' : '') + (L.clip && layerBelow(L) ? ' clipped' : ''), 'data-layer': L.id }, label, track, hd));
   }
   if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap + to add a layer'));
   // empty space below the last track (pannable)
@@ -554,7 +596,47 @@ function renderTimeline() {
   if (S.sel && G.lastSel !== S.sel) { const row = inner.querySelector(`.tl-row[data-layer="${S.sel}"]`); if (row) tl.scrollTop = row.offsetTop - HEAD_H; }
   G.lastSel = S.sel; G.zoomed = false;
   G.rendering = false;
-  placeEnd(); G.updBars?.();
+  placeEnd(); G.updBars?.(); updHandles();
+}
+// the ☰ handles sit at a fixed spot on screen; colour them by whether the layer's clip is under them right now
+function updHandles() {
+  const p = P(), inner = $('#tlInner'); if (!p || !inner) return;
+  const t = (tl.scrollLeft + tl.clientWidth - 20 - tlOriginX()) / S.pps;
+  for (const row of inner.querySelectorAll('.tl-row[data-layer]')) {
+    const L = p.layers.find(l => l.id === row.dataset.layer), hd = row.lastChild;
+    if (L && hd?.classList.contains('tl-hd')) hd.classList.toggle('on', t >= L.start && t <= L.end);
+  }
+}
+// ---- layer reorder by dragging the ☰ handle vertically (touch: via the gesture controller; mouse: directly) ----
+function reorderStart(row, L) {
+  const rows = [...$('#tlInner').querySelectorAll('.tl-row[data-layer]')], ix = P().layers.indexOf(L);
+  row.classList.add('reorder'); tl.classList.add('reordering');
+  return { row, L, rows, ix, to: ix, st0: tl.scrollTop };
+}
+function reorderMove(r, dy) {
+  dy += tl.scrollTop - r.st0;
+  const n = r.rows.length, to = Math.max(0, Math.min(n - 1, r.ix + Math.round(dy / ROW_H)));
+  r.row.style.transform = `translateY(${dy}px)`;
+  if (to !== r.to) {
+    r.to = to;
+    r.rows.forEach((el, i) => { if (el === r.row) return; const shift = i > r.ix && i <= to ? -ROW_H : i < r.ix && i >= to ? ROW_H : 0; el.style.transform = shift ? `translateY(${shift}px)` : ''; });
+    navigator.vibrate?.(5);
+  }
+}
+function reorderEnd(r) {
+  r.rows.forEach(el => (el.style.transform = '')); r.row.classList.remove('reorder'); tl.classList.remove('reordering');
+  if (r.to === r.ix) return;
+  const ls = P().layers; ls.splice(r.ix, 1); ls.splice(r.to, 0, r.L); commit();
+}
+function bindReorderMouse(hd, L) {
+  hd.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse') return;
+    e.stopPropagation(); e.preventDefault(); hd.setPointerCapture(e.pointerId);
+    const y0 = e.clientY, r = reorderStart(hd.parentElement, L);
+    const mv = ev => reorderMove(r, ev.clientY - y0);
+    const up = () => { hd.removeEventListener('pointermove', mv); hd.removeEventListener('pointerup', up); hd.removeEventListener('pointercancel', up); reorderEnd(r); };
+    hd.addEventListener('pointermove', mv); hd.addEventListener('pointerup', up); hd.addEventListener('pointercancel', up);
+  });
 }
 // desktop mouse on the ruler: drag to scrub (= pan, the playhead is fixed)
 function bindScrub(el) {
@@ -679,8 +761,8 @@ function bindTimelineGestures() {
       G.noClick = true; return;
     }
     if (G.ptrs.size > 2 || G.pinch) return;
-    const hit = e.target.closest('.kf, .clip, .tl-end-h');
-    const g = G.g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, sl: tl.scrollLeft, st: tl.scrollTop, mode: 'pending', target: e.target,
+    const hit = e.target.closest('.kf, .clip, .tl-end-h'), hd = e.target.closest('.tl-hd');
+    const g = G.g = { hd, id: e.pointerId, x0: e.clientX, y0: e.clientY, sl: tl.scrollLeft, st: tl.scrollTop, mode: 'pending', target: e.target,
       samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }], moved: false };
     if (hit?._drag) {
       g.item = hit; g.spec = hit._drag; g.isKey = hit.classList.contains('kf'); g.isTrim = e.target.classList.contains('trim') || hit.classList.contains('tl-end-h');
@@ -710,12 +792,14 @@ function bindTimelineGestures() {
     if (g.mode === 'pending') {
       if (Math.hypot(dx, dy) < SLOP) return;
       clearTimeout(g.hold);
-      if (g.item && g.armed) { grab(g, g.x0); }
+      if (g.hd && Math.abs(dy) > Math.abs(dx)) { g.mode = 'reorder'; G.noClick = true; g.r = reorderStart(g.hd.parentElement, P().layers.find(l => l.id === g.hd.parentElement.dataset.layer)); navigator.vibrate?.(8); }
+      else if (g.item && g.armed) { grab(g, g.x0); }
       else { g.mode = 'pan'; G.noClick = true; const ax = Math.abs(dx), ay = Math.abs(dy); g.axis = S.sel ? 'x' : ax > 2 * ay ? 'x' : ay > 2 * ax ? 'y' : 'xy'; } // a selection locks panning to horizontal (Alight)
     }
     if (g.mode === 'pan') {
       if (g.axis !== 'y') panX(g.sl - dx);
       if (g.axis !== 'x') tl.scrollTop = g.st - dy;
+    } else if (g.mode === 'reorder') { reorderMove(g.r, dy);
     } else if (g.mode === 'drag') {
       const apply = () => { const ddx = g.lx - g.gx + tl.scrollLeft - g.gsl; if (Math.abs(ddx) > 2) g.moved = true; if (g.moved) g.spec.onMove(ddx / S.pps, g.ctx, e); };
       apply(); if (g.moved) autoScroll(e.clientX, apply);
@@ -728,19 +812,23 @@ function bindTimelineGestures() {
     const g = G.g; if (!g || g.id !== e.pointerId) return;
     G.g = null; clearTimeout(g.hold);
     if (g.mode === 'drag') { G.noClick = true; endDrag(g, e); }
+    else if (g.mode === 'reorder') { G.noClick = true; reorderEnd(g.r); }
     else if (g.mode === 'pan') { if (G.rb) { releaseRb(); if (g.axis !== 'x') startMomentum({ ...g, axis: 'y' }); } else startMomentum(g); }
-    else if (g.mode === 'pending' && g.item && e.type === 'pointerup') { G.noClick = true; g.spec.onEnd?.(false, g.spec.onStart?.({ target: g.target, clientX: e.clientX }) || {}, e); }
+    else if (g.mode === 'pending' && g.item && e.type === 'pointerup') { G.noClick = true; G.swallow = performance.now() + 450; g.spec.onEnd?.(false, g.spec.onStart?.({ target: g.target, clientX: e.clientX }) || {}, e); }
   };
   tl.addEventListener('pointerup', up); tl.addEventListener('pointercancel', up);
   tl.addEventListener('lostpointercapture', up);
   // a pan / drag / pinch must not end in a click (deselect on empty track, select on a pill)
+  // a tap that selects a clip / key re-lays out the bottom zone (panel opens); the synthetic click that follows must not
+  // land on whatever is now under the finger (a tile of the new panel)
+  window.addEventListener('click', e => { if (G.swallow && performance.now() < G.swallow && !tl.contains(e.target)) { G.swallow = 0; e.stopPropagation(); e.preventDefault(); } }, true);
   tl.addEventListener('click', e => { if (G.noClick) { G.noClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
   // a short tap on empty timeline space (beside / below the rows, past the end; not the ruler band, pills, clips or keys) deselects
   let tapDown = null;
   tl.addEventListener('pointerdown', e => { if (e.isPrimary) tapDown = { x: e.clientX, y: e.clientY, t0: performance.now() }; }, true);
   tl.addEventListener('click', e => {
-    if (!S.sel || !tapDown || !isTap(tapDown, e)) return;
-    if (e.target.closest('.clip, .kf, .tl-head, .tl-end-h, button, .tl-label:not(.pad)')) return;
+    if (!(S.sel || S.multi.size) || !tapDown || !isTap(tapDown, e)) return;
+    if (e.target.closest('.clip, .kf, .tl-head, .tl-end-h, .tl-hd, button, .tl-label:not(.pad)')) return;
     deselect();
   });
   tl.addEventListener('contextmenu', e => e.preventDefault());
@@ -787,7 +875,7 @@ function bindKey(d, L, list) {
     onStart: () => ({ t0: list[0].k.t }),
     onMove: (dt, c) => { const nt = Math.max(0, snapT(c.t0 + dt)); for (const { k } of list) k.t = nt; d.style.left = nt * S.pps + 'px'; setExtent(nt + viewT()); },
     onEnd: (moved, c, ev) => {
-      S.sel = L.id;
+      S.sel = L.id; S.multi.clear();
       if (moved) { for (const p of new Set(list.map(x => x.prop))) L.keys[p].sort((a, b) => a.t - b.t); }
       else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = Math.min(P().duration, list[0].k.t); if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
       commit();
@@ -826,6 +914,7 @@ function renderPanel() {
     case 'fx': content = L ? panelFx(L) : need('Select a layer.'); break;
     case 'blend': content = L ? panelBlend(L) : need('Select a layer.'); break;
     case 'ease': content = panelEase(L); break;
+    case 'presets': content = L ? panelPresets(L) : need('Select a layer.'); break;
     case 'project': content = panelProject(); break;
     case 'points': ({ content, left } = panelPoints(L)); break;
     case 'draw': ({ content, right } = panelDraw(L)); break;
@@ -857,7 +946,7 @@ function tileGrid(L) {
     h('div', { class: 'trow four' },
       T('layer', 'move', 'Move & Transform', open('layer'), visual ? '' : 'off'),
       T('edit', editIc, editLabel, open('edit')),
-      T('presets', 'presets', 'Presets', soon('Presets')),
+      T('presets', 'presets', 'Presets', open('presets')),
       T('fx', 'effects', 'Effects', open('fx'), visual ? '' : 'off')),
     h('div', { class: 'trow four' },
       T('ease', 'ease', 'Easing', open('ease')),
@@ -1158,7 +1247,7 @@ function renderSheet() {
       side('textaa', 'Text', () => addLayer(makeLayer(P(), 'text')), 'add-text'),
       side('close', '', () => { S.tab = null; refreshAll(); }, 'sheet-close')));
 }
-function openSheet(tabId) { if (S.sel) { S.sel = null; S.selKeys.clear(); } S.tab = 'add'; if (tabId) S.addTab = tabId; refreshAll(); }
+function openSheet(tabId) { S.multi.clear(); if (S.sel) { S.sel = null; S.selKeys.clear(); } S.tab = 'add'; if (tabId) S.addTab = tabId; refreshAll(); }
 
 // ---- ⋯ layer menu: Alight-style dropdown anchored under the ⋯ button (tap outside to close) ----
 // colour tags shown on the layer's timeline clip (sampled from the reference swatches)
@@ -1231,6 +1320,129 @@ function openLayerMenu() {
   // iOS-style auto-shrink: labels that don't fit get a smaller font (Alight's "Stretch to Composition Area")
   for (const sp of layerMenu.querySelectorAll('.lm-it span')) { let f = 17; while (sp.scrollWidth > sp.clientWidth + 0.5 && f > 11) sp.style.fontSize = (f -= 0.5) + 'px'; }
   $('#btnMore').classList.add('on');
+}
+// ---- ⧉ copy menu (transport row): Select All / Duplicate / Copy / Save Preset / Paste Layer / Paste Style ----
+// clipboard + presets live in localStorage so they work across projects (media blobs are shared in IndexedDB)
+const CLIP_KEY = 'kntc.clipboard', PRESET_KEY = 'kntc.presets';
+const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const readClip = () => readJSON(CLIP_KEY, null);
+const listPresets = () => readJSON(PRESET_KEY, []);
+const savePresets = ps => { try { localStorage.setItem(PRESET_KEY, JSON.stringify(ps)); return true; } catch { toast('Storage full'); return false; } };
+const targets = () => (S.multi.size ? P().layers.filter(l => S.multi.has(l.id)) : selLayer() ? [selLayer()] : []);
+function freshIds(c) { c.id = uid(); for (const p in c.keys || {}) c.keys[p].forEach(k => (k.id = uid())); (c.effects || []).forEach(f => (f.id = uid())); return c; }
+// style = fill, border (stroke), shadow, effects, blending, opacity (incl. its keyframes)
+const STYLE_PARTS = [['fill', 'Fill'], ['stroke', 'Border'], ['shadow', 'Shadow'], ['effects', 'Effects'], ['blend', 'Blending'], ['opacity', 'Opacity']];
+function styleOf(L) {
+  const st = { from: L.type, effects: clone(L.effects || []), blend: L.blend || 'normal', opacity: { v: L.props.opacity, keys: clone(L.keys?.opacity || []) } };
+  if (L.type === 'shape') { const s = L.shape; st.fill = { fill: s.fill, fill2: s.fill2, gradient: s.gradient, gradAngle: s.gradAngle, fillOn: s.fillOn }; st.stroke = { stroke: s.stroke, strokeW: s.strokeW }; }
+  else if (L.type === 'text') { st.fill = { fill: L.text.fill }; st.stroke = { stroke: L.text.stroke, strokeW: L.text.strokeW }; }
+  else if (L.type === 'solid') st.fill = { fill: L.solid.color, fill2: L.solid.fill2, gradient: L.solid.gradient, gradAngle: L.solid.gradAngle };
+  if (L.shadow) st.shadow = clone(L.shadow);
+  return st;
+}
+function applyStyle(L, st, parts) {
+  const want = k => parts.includes(k) && st[k] != null;
+  if (want('fill')) {
+    const f = st.fill;
+    if (L.type === 'shape') Object.assign(L.shape, Object.fromEntries(Object.entries(f).filter(([, v]) => v !== undefined)));
+    else if (L.type === 'text') L.text.fill = f.fill;
+    else if (L.type === 'solid') { L.solid.color = f.fill; for (const k of ['fill2', 'gradient', 'gradAngle']) if (f[k] !== undefined) L.solid[k] = f[k]; }
+  }
+  if (want('stroke') && (L.type === 'shape' || L.type === 'text')) Object.assign(L[L.type], st.stroke);
+  if (want('shadow') && visualLayer(L)) L.shadow = clone(st.shadow);
+  if (want('effects') && L.type !== 'audio') L.effects = clone(st.effects).map(f => ((f.id = uid()), f));
+  if (want('blend') && L.type !== 'audio') L.blend = st.blend;
+  if (want('opacity') && L.type !== 'audio') {
+    L.props.opacity = st.opacity.v;
+    if (st.opacity.keys?.length) L.keys.opacity = clone(st.opacity.keys).map(k => ((k.id = uid()), k)); else delete L.keys.opacity;
+  }
+}
+const ALL_PARTS = STYLE_PARTS.map(p => p[0]);
+function selectAllLayers() {
+  const ls = P().layers; if (!ls.length) return;
+  S.sel = null; S.selKeys.clear(); S.tab = null; S.multi = new Set(ls.map(l => l.id));
+  refreshAll(); toast(ls.length === 1 ? '1 layer selected' : `All ${ls.length} layers selected`);
+}
+function duplicateLayers() {
+  const ts = targets(); if (!ts.length) return;
+  if (ts.length === 1 && !S.multi.size) return duplicateLayer(ts[0]);
+  const ls = P().layers, made = new Set();
+  for (const L of ts) { const c = freshIds(clone(L)); c.name = L.name + ' copy'; ls.splice(ls.indexOf(L), 0, c); made.add(c.id); }
+  S.multi = made; commit(); toast(`Duplicated ${ts.length} layers`);
+}
+function copyLayers() {
+  const ts = targets(); if (!ts.length) return;
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify({ layers: ts.map(clone), style: styleOf(ts[0]), at: Date.now() })); }
+  catch { return toast('Storage full — could not copy'); }
+  toast(ts.length === 1 ? `Copied “${ts[0].name}”` : `Copied ${ts.length} layers`);
+}
+function pasteLayers() {
+  const c = readClip(); if (!c?.layers?.length) return toast('Nothing to paste');
+  const p = P(), made = c.layers.map(L => { const n = freshIds(clone(L)); return n; });
+  p.layers.unshift(...made); hydrateMedia(p);
+  if (made.length === 1) { S.sel = made[0].id; S.multi.clear(); } else { S.sel = null; S.multi = new Set(made.map(l => l.id)); }
+  S.selKeys.clear(); S.tab = null; commit(); toast(made.length === 1 ? `Pasted “${made[0].name}”` : `Pasted ${made.length} layers`);
+}
+function pasteStyle(parts) {
+  const c = readClip(), ts = targets(); if (!c?.style || !ts.length) return;
+  ts.forEach(L => applyStyle(L, c.style, parts)); commit();
+  toast(parts.length === ALL_PARTS.length ? 'Style pasted' : STYLE_PARTS.filter(p => parts.includes(p[0])).map(p => p[1]).join(' + ') + ' pasted');
+}
+function savePreset() {
+  const L = selLayer(); if (!L) return;
+  const st = styleOf(L), ps = listPresets();
+  let name = L.name, n = 2; while (ps.some(p => p.name === name)) name = `${L.name} ${n++}`;
+  ps.unshift({ id: uid(), name, style: st, swatch: st.fill?.fill || '#65abcd', at: Date.now() });
+  if (savePresets(ps)) toast(`Saved preset “${name}” — find it under Presets`);
+}
+function presetSummary(st) {
+  const bits = [];
+  if (st.fill) bits.push('Fill'); if (st.stroke?.strokeW > 0) bits.push('Border'); if (st.shadow?.on) bits.push('Shadow');
+  if (st.effects?.length) bits.push(st.effects.length + (st.effects.length === 1 ? ' effect' : ' effects'));
+  if (st.blend && st.blend !== 'normal') bits.push(st.blend); if (st.opacity && (st.opacity.v !== 1 || st.opacity.keys?.length)) bits.push('Opacity');
+  return bits.join(' · ') || 'Default style';
+}
+function panelPresets(L) {
+  const ps = listPresets();
+  if (!ps.length) return h('div', { class: 'hint', 'data-testid': 'presets-empty' }, 'No presets yet. Open ⧉ in the play bar and tap Save Preset to keep a layer’s style (fill, border, shadow, effects, blending, opacity).');
+  return h('div', { class: 'pre-list', 'data-testid': 'presets' }, ...ps.map(pr => h('div', { class: 'pre-it', 'data-testid': 'preset' },
+    h('button', { class: 'pre-apply', 'data-testid': 'preset-apply', onclick: () => { applyStyle(L, pr.style, ALL_PARTS); commit(); toast(`Applied “${pr.name}”`); } },
+      h('i', { class: 'pre-sw', style: { background: pr.swatch } }), h('span', {}, h('b', {}, pr.name), h('small', {}, presetSummary(pr.style)))),
+    h('button', { class: 'ib pre-del', title: 'Delete preset', 'data-testid': 'preset-del', onclick: () => { savePresets(listPresets().filter(x => x.id !== pr.id)); renderPanel(); } }, icon('trash')))));
+}
+let copyMenu = null, cmWrap = null;
+function closeCopyMenu() { if (!copyMenu) return; cmWrap.remove(); copyMenu = cmWrap = null; $('#btnCopy').classList.remove('on'); }
+function openCopyMenu() {
+  if (copyMenu) return closeCopyMenu();
+  closeLayerMenu();
+  const ts = targets(), clip = readClip(), single = !S.multi.size && selLayer();
+  const it = (label, tid, ic, fn, ok, extra = {}) => h('button', { class: 'cm-it' + (ok ? '' : ' off'), 'data-testid': 'cm-' + tid, 'aria-disabled': ok ? null : 'true',
+    onclick: () => { if (!ok) return; if (!extra.keep) closeCopyMenu(); fn(); } },
+    icon(ic, 'cm-ic'), h('span', { class: 'cm-tx' }, label, extra.sub ? h('small', {}, extra.sub) : null), extra.badge ? h('i', { class: 'cm-new' }, extra.badge) : null, extra.chev ? icon('chevr', 'cm-chev') : null);
+  const main = () => [
+    it('Select All Layers', 'select-all', 'selall', selectAllLayers, P().layers.length > 0),
+    it('Duplicate Layer', 'duplicate', 'cm-dup', duplicateLayers, ts.length > 0),
+    it('Copy Layer', 'copy', 'cm-copy', copyLayers, ts.length > 0, { sub: '(including style)' }),
+    it('Save Preset', 'preset', 'cm-preset', savePreset, !!(single && visualLayer(single)), { badge: 'NEW' }),
+    it('Paste Layer', 'paste', 'cm-paste', pasteLayers, !!clip?.layers?.length),
+    it('Paste Style', 'paste-style', 'cm-pstyle', () => cmIn.replaceChildren(...sub()), !!(clip?.style && ts.length), { chev: true, keep: true })];
+  const sub = () => [
+    h('button', { class: 'cm-it cm-back', 'data-testid': 'cm-back', onclick: () => cmIn.replaceChildren(...main()) }, icon('chevl', 'cm-ic'), h('span', { class: 'cm-tx' }, 'Paste Style')),
+    it('All Style', 'ps-all', 'cm-pstyle', () => pasteStyle(ALL_PARTS), true),
+    ...STYLE_PARTS.map(([k, label]) => it(label, 'ps-' + k, { fill: 'fill', stroke: 'border', shadow: 'border', effects: 'effects', blend: 'blend', opacity: 'blend' }[k], () => pasteStyle([k]), clip.style[k] != null))];
+  const cmIn = h('div', { class: 'cm-in' }, ...main());
+  copyMenu = h('div', { class: 'cm', role: 'menu', 'data-testid': 'copy-menu' }, cmIn);
+  const scrim = h('div', { class: 'lm-scrim', 'data-testid': 'copy-menu-scrim' });
+  const close = e => { e.preventDefault(); e.stopPropagation(); closeCopyMenu(); };
+  scrim.addEventListener('pointerdown', close); scrim.addEventListener('click', e => e.stopPropagation());
+  cmWrap = h('div', { class: 'lm-wrap' }, scrim, copyMenu);
+  document.body.append(cmWrap);
+  // above the button, right edge 10px from the screen edge, arrow pointing down at the button (reference/16)
+  const r = $('#btnCopy').getBoundingClientRect(), right = 10;
+  copyMenu.style.right = right + 'px'; copyMenu.style.bottom = innerHeight - r.top + 10 + 'px';
+  copyMenu.style.setProperty('--ax', (innerWidth - right - (r.left + r.width / 2)) + 'px');
+  cmIn.style.maxHeight = Math.round(r.top - 10 - 12 - 50) + 'px';
+  $('#btnCopy').classList.add('on');
 }
 function selectedKeyObjs() {
   const out = [];
@@ -1570,7 +1782,7 @@ function buildChrome() {
   $('#btnPlay').onclick = () => togglePlay();
   $('#btnStart').onclick = () => seek(0);
   $('#btnEnd').onclick = () => seek(P().duration);
-  $('#btnCopy').onclick = () => duplicateLayer(selLayer());
+  $('#btnCopy').onclick = openCopyMenu;
   $('#btnFit').onclick = () => { S.full = !S.full; refreshAll(); };
   $('#projName').onchange = e => { P().name = e.target.value || 'Untitled'; commit(); };
   $('#layerName').onchange = e => { const L = selLayer(); if (L) { L.name = e.target.value || L.name; commit(); } };
@@ -1579,7 +1791,7 @@ function buildChrome() {
   $('#fileAudio').onchange = e => { const f = e.target.files[0]; if (f) importAudioFile(f); e.target.value = ''; };
   $('#fileJson').onchange = e => { const f = e.target.files[0]; if (f) importJSON(f); e.target.value = ''; };
   $('#pickColor').addEventListener('input', e => { S.draw.color = e.target.value; renderPanel(); });
-  window.addEventListener('resize', () => { closeLayerMenu(); layoutStage(); drawFrame(); renderTimeline(); });
+  window.addEventListener('resize', () => { closeLayerMenu(); closeCopyMenu(); layoutStage(); drawFrame(); renderTimeline(); });
   new ResizeObserver(() => { layoutStage(); drawFrame(); }).observe($('#stageWrap'));
   window.addEventListener('keydown', e => {
     if (e.target.matches('input, textarea, select')) return;
@@ -1587,7 +1799,7 @@ function buildChrome() {
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (e.key === 'k') toggleKeyAll();
-    else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else goBack(); }
+    else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else if (copyMenu) closeCopyMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
@@ -1596,7 +1808,7 @@ function buildChrome() {
     else if (e.key === 'ArrowRight') seek(S.t + 1 / P().fps);
   });
 }
-function afterHistory(s) { closeLayerMenu(); S.project = s; if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
+function afterHistory(s) { closeLayerMenu(); closeCopyMenu(); S.project = s; for (const id of S.multi) if (!s.layers.some(l => l.id === id)) S.multi.delete(id); if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
 function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
