@@ -1,21 +1,27 @@
 import { newProject, makeLayer, ASPECTS, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect } from './effects.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerBounds, syncVideos } from './render.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
 
 // ---------------- state ----------------
-const S = { project: null, t: 0, playing: false, sel: null, selKeys: new Set(), tab: 'add', pps: 70, autoFit: true, loop: true, fxCat: 'All' };
+// tab: null (nothing / tile grid when a layer is selected) | 'add' (add sheet) | a sub panel id (see SUB_TITLE)
+const S = { project: null, t: 0, playing: false, sel: null, selKeys: new Set(), tab: null, addTab: 'shape', pps: 60, autoFit: false, loop: true, fxCat: 'All',
+  draw: { tool: 'pencil', size: 16, color: '#0000ff' }, cursor: null, picking: false, full: false };
 const history = new History();
 const renderer = new Renderer();
 const view = $('#view'), overlay = $('#overlay'), stage = $('#stage');
 let viewScale = 1; // css px per project px
-const LABEL_W = () => (window.innerWidth < 600 ? 84 : 120);
+const PILL_W = 70, HEAD_H = 48, ROW_H = 40; // timeline: layer pill width, ruler+timecode band, row pitch
+const ACCENT = '#00ffa8';
 
 const P = () => S.project;
 const selLayer = () => P()?.layers.find(l => l.id === S.sel) || null;
+const isSub = () => !!S.tab && S.tab !== 'add';
+const mode = () => (isSub() ? 'sub' : S.sel ? 'sel' : 'none');
+const soon = what => () => toast((what ? what + ': ' : '') + 'coming soon');
 
 function commit(opts = {}) {
   history.push(P());
@@ -25,7 +31,19 @@ function commit(opts = {}) {
 let saveTimer;
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (!store.saveProject(P())) toast('Storage full — export JSON to keep work'); }, 350); }
 
-function refreshAll() { layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
+function refreshAll() { layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
+
+// body[data-mode] drives the top bar / bottom zone (none: timeline + FAB, sel: tile grid, sub: property panel)
+function layoutChrome() {
+  const m = mode(), b = document.body;
+  b.dataset.mode = m;
+  b.classList.toggle('panel-open', m !== 'none');
+  b.classList.toggle('sheet-open', S.tab === 'add');
+  b.classList.toggle('full', S.full);
+  b.dataset.sub = isSub() ? S.tab : '';
+  $('#sheet').hidden = S.tab !== 'add';
+  if (S.tab === 'add') renderSheet();
+}
 
 // ---------------- media ----------------
 async function registerMedia(id, blob, type) {
@@ -34,6 +52,9 @@ async function registerMedia(id, blob, type) {
   if (type === 'image') {
     el = new Image(); el.decoding = 'async'; el.src = url;
     await new Promise((r, j) => { el.onload = r; el.onerror = j; });
+  } else if (type === 'audio') {
+    el = new Audio(); el.preload = 'auto'; el.src = url;
+    await new Promise((r, j) => { el.onloadedmetadata = r; el.onerror = j; });
   } else {
     el = document.createElement('video');
     el.muted = true; el.playsInline = true; el.setAttribute('playsinline', ''); el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.src = url;
@@ -44,12 +65,13 @@ async function registerMedia(id, blob, type) {
   return el;
 }
 async function hydrateMedia(project) {
+  let any = false;
   for (const L of project.layers) {
-    if ((L.type === 'image' || L.type === 'video') && !media.has(L.media.id)) {
-      try { const b = await store.getMedia(L.media.id); if (b) await registerMedia(L.media.id, b, L.type); } catch (e) { console.warn(e); }
+    if ((L.type === 'image' || L.type === 'video' || L.type === 'audio') && !media.has(L.media.id)) {
+      try { const b = await store.getMedia(L.media.id); if (b) { await registerMedia(L.media.id, b, L.type); any = true; } } catch (e) { console.warn(e); }
     }
   }
-  drawFrame();
+  drawFrame(); if (any) renderTimeline();
 }
 async function importMediaFile(file) {
   const type = file.type.startsWith('video') ? 'video' : file.type.startsWith('image') ? 'image' : null;
@@ -62,16 +84,72 @@ async function importMediaFile(file) {
     addLayer(makeLayer(P(), type, { mediaId: id, w, h: hh, name: file.name.slice(0, 24), mediaDuration: type === 'video' ? el.duration : 0 }));
   } catch (e) { console.error(e); toast('Import failed'); }
 }
+async function importAudioFile(file) {
+  if (!/^audio\//.test(file.type) && !/\.(mp3|m4a|wav|aac|ogg)$/i.test(file.name)) return toast('Unsupported audio file');
+  const id = uid();
+  try {
+    await store.putMedia(id, file);
+    const el = await registerMedia(id, file, 'audio');
+    addLayer(makeLayer(P(), 'audio', { mediaId: id, name: file.name.replace(/\.[^.]+$/, '').slice(0, 24), mediaDuration: isFinite(el.duration) ? el.duration : 0 }));
+  } catch (e) { console.error(e); toast('Audio import failed'); }
+}
 
 // ---------------- project ops ----------------
 function setProject(p, { resetHistory = true } = {}) {
-  S.project = p; S.sel = null; S.selKeys.clear(); S.t = Math.min(S.t, p.duration); G.extT = 0;
+  S.project = p; S.sel = null; S.selKeys.clear(); S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
   if (resetHistory) history.reset(p);
   store.saveProject(p); hydrateMedia(p); refreshAll();
 }
-function addLayer(L) {
-  P().layers.unshift(L); S.sel = L.id; S.selKeys.clear();
-  if (S.tab === 'add') S.tab = 'layer';
+// new layers go on TOP of the stack (index 0 = top of the layer list = rendered last / in front)
+function addLayer(L, { tab = null } = {}) {
+  P().layers.unshift(L); S.sel = L.id; S.selKeys.clear(); S.tab = tab;
+  commit();
+}
+function selectLayer(id) {
+  S.sel = id; S.selKeys.clear();
+  if (S.tab === 'add' || ['project', 'points', 'draw', 'edit'].includes(S.tab)) S.tab = null;
+  refreshAll();
+}
+function deselect() { S.sel = null; S.selKeys.clear(); if (S.tab !== 'project') S.tab = null; refreshAll(); }
+function goBack() {
+  if (S.full) { S.full = false; return refreshAll(); }
+  if (S.tab === 'add') { S.tab = null; return refreshAll(); }
+  if (isSub()) { S.tab = null; S.picking = false; return refreshAll(); }
+  if (S.sel) return deselect();
+  showHome();
+}
+function openSub(id) {
+  const L = selLayer();
+  if (id === 'edit' && L) {
+    if (L.type === 'shape' && L.shape.kind === 'path') id = 'points';
+    else if (L.type === 'draw') id = 'draw';
+    else if (L.type === 'solid') id = 'style';
+    else if (L.type === 'adjust') id = 'fx';
+  }
+  S.tab = id; refreshAll();
+}
+function duplicateLayer(L) {
+  if (!L) return toast('Select a layer to duplicate');
+  const ix = P().layers.indexOf(L);
+  const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); c.effects.forEach(f => (f.id = uid()));
+  P().layers.splice(ix, 0, c); S.sel = c.id; commit();
+}
+function deleteLayer(L) {
+  if (!L) return; P().layers.splice(P().layers.indexOf(L), 1); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+}
+function moveLayer(L, d) {
+  const ls = P().layers, ix = ls.indexOf(L), j = ix + d; if (j < 0 || j >= ls.length) return;
+  ls.splice(ix, 1); ls.splice(j, 0, L); commit();
+}
+function splitAt(L, how) {
+  const t = snapT(S.t);
+  if (!(t > L.start + 1e-3 && t < L.end - 1e-3)) return toast('Move the playhead over the clip first');
+  if (how === 'start') L.start = t;
+  else if (how === 'end') L.end = t;
+  else {
+    const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); c.effects.forEach(f => (f.id = uid()));
+    c.start = t; L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
+  }
   commit();
 }
 function demoProject(aspect = '9:16') {
@@ -97,11 +175,12 @@ function demoProject(aspect = '9:16') {
   return p;
 }
 
+
 // ---------------- stage ----------------
 function layoutStage() {
   const wrap = $('#stageWrap'), r = wrap.getBoundingClientRect();
-  const pad = 14, p = P(); if (!p) return;
-  const sc = Math.min((r.width - pad * 2) / p.w, (r.height - pad * 2) / p.h);
+  const p = P(); if (!p || r.width < 2 || r.height < 2) return;
+  const sc = Math.min(r.width / p.w, r.height / p.h);
   const cw = Math.max(40, Math.floor(p.w * sc)), ch = Math.max(40, Math.floor(p.h * sc));
   viewScale = cw / p.w;
   stage.style.width = cw + 'px'; stage.style.height = ch + 'px';
@@ -110,7 +189,6 @@ function layoutStage() {
   if (view.width !== bw || view.height !== bh) { view.width = bw; view.height = bh; }
   const ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
   if (overlay.width !== ow || overlay.height !== oh) { overlay.width = ow; overlay.height = oh; }
-  $('#hud').textContent = `${p.w}×${p.h} · ${p.fps}fps · ${p.aspect}`;
 }
 
 function drawFrame() {
@@ -120,53 +198,69 @@ function drawFrame() {
   drawOverlay();
 }
 
+function toLocal(L, px, py) {
+  const tr = evalTransform(L, S.t), a = -tr.rotation * Math.PI / 180, dx = px - tr.x, dy = py - tr.y, s = tr.scale || 1e-6;
+  return [(dx * Math.cos(a) - dy * Math.sin(a)) / s, (dx * Math.sin(a) + dy * Math.cos(a)) / s];
+}
+function toWorld(L, lx, ly) {
+  const tr = evalTransform(L, S.t), a = tr.rotation * Math.PI / 180;
+  return [tr.x + (lx * Math.cos(a) - ly * Math.sin(a)) * tr.scale, tr.y + (lx * Math.sin(a) + ly * Math.cos(a)) * tr.scale];
+}
 function layerCorners(L) {
   const tr = evalTransform(L, S.t), b = layerBounds(L, P(), view.getContext('2d'));
-  const a = tr.rotation * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
-  const pt = (lx, ly) => [tr.x + (lx * c - ly * s) * tr.scale, tr.y + (lx * s + ly * c) * tr.scale];
+  const pt = (lx, ly) => toWorld(L, lx, ly);
   return { tr, b, pt, corners: [pt(-b.w / 2, -b.h / 2), pt(b.w / 2, -b.h / 2), pt(b.w / 2, b.h / 2), pt(-b.w / 2, b.h / 2)], rotH: pt(0, -b.h / 2 - 60 / (tr.scale * viewScale || 1)) };
 }
 
 function drawOverlay() {
   const ctx = overlay.getContext('2d'), dpr = overlay.width / parseFloat(stage.style.width || 1);
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, overlay.width, overlay.height);
-  const L = selLayer(); if (!L || L.type === 'adjust' || S.playing) return;
+  const L = selLayer(); if (!L || L.type === 'adjust' || L.type === 'audio' || S.playing) return;
   const k = viewScale * dpr;
   ctx.setTransform(k, 0, 0, k, 0, 0);
+  const dot = (x, y, r = 5) => { ctx.beginPath(); ctx.arc(x, y, r / k * dpr, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); };
+  if (S.tab === 'points' && L.type === 'shape' && L.shape.kind === 'path') {
+    const pts = (L.shape.pts || []).map(p => toWorld(L, p[0], p[1]));
+    ctx.lineWidth = 1.5 / k * dpr; ctx.strokeStyle = '#fff';
+    if (pts.length > 1) { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (L.shape.closed !== false) ctx.closePath(); ctx.stroke(); }
+    pts.forEach((p, i) => { const s = (i === pts.length - 1 ? 7 : 5) / k * dpr; ctx.fillStyle = i === pts.length - 1 ? ACCENT : '#fff'; ctx.fillRect(p[0] - s, p[1] - s, s * 2, s * 2); });
+    const c = S.cursor || [P().w / 2, P().h / 2], g = 4 / k * dpr, l = 9 / k * dpr;
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 1.2 / k * dpr; ctx.beginPath();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(c[0] + dx * g, c[1] + dy * g); ctx.lineTo(c[0] + dx * l, c[1] + dy * l); }
+    ctx.stroke(); ctx.beginPath(); ctx.arc(c[0], c[1], 1.6 / k * dpr, 0, Math.PI * 2); ctx.fillStyle = '#111'; ctx.fill();
+    return;
+  }
+  if (S.tab === 'draw') return;
   // motion path
   if (hasKeys(L, 'x') || hasKeys(L, 'y')) {
-    ctx.beginPath(); ctx.lineWidth = 1.2 / k; ctx.strokeStyle = 'rgba(255,204,51,.6)'; ctx.setLineDash([4 / k, 4 / k]);
+    ctx.beginPath(); ctx.lineWidth = 1.2 / k * dpr; ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.setLineDash([4 / k * dpr, 4 / k * dpr]);
     for (let i = 0; i <= 60; i++) { const t = L.start + (L.end - L.start) * i / 60; const x = valueAt(L, 'x', t), y = valueAt(L, 'y', t); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
     ctx.stroke(); ctx.setLineDash([]);
   }
   if (S.t < L.start || S.t >= L.end) return;
-  const g = layerCorners(L);
-  ctx.lineWidth = 1.4 / k; ctx.strokeStyle = '#3d8bff'; ctx.shadowBlur = 0;
-  ctx.beginPath(); g.corners.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.stroke();
-  ctx.shadowBlur = 0;
-  const top = [(g.corners[0][0] + g.corners[1][0]) / 2, (g.corners[0][1] + g.corners[1][1]) / 2];
+  const g = layerCorners(L), c = g.corners;
+  ctx.lineWidth = 1.6 / k * dpr; ctx.strokeStyle = '#fff';
+  ctx.beginPath(); c.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.stroke();
+  const top = [(c[0][0] + c[1][0]) / 2, (c[0][1] + c[1][1]) / 2];
   ctx.beginPath(); ctx.moveTo(...top); ctx.lineTo(...g.rotH); ctx.stroke();
-  const hs = 9 / k;
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath(); ctx.arc(g.rotH[0], g.rotH[1], hs, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#3d8bff'; ctx.stroke();
-  const c2 = g.corners[2]; ctx.fillRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2); ctx.strokeStyle = '#3d8bff'; ctx.strokeRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2);
-  ctx.beginPath(); ctx.arc(g.tr.x, g.tr.y, 3 / k, 0, Math.PI * 2); ctx.fillStyle = '#3d8bff'; ctx.fill();
+  for (let i = 0; i < 4; i++) { const a = c[i], b = c[(i + 1) % 4]; dot(...a); dot((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); }
+  dot(...g.rotH, 7); ctx.beginPath(); ctx.arc(...g.rotH, 7 / k * dpr, 0, Math.PI * 2); ctx.strokeStyle = '#000'; ctx.lineWidth = 1 / k * dpr; ctx.stroke();
+  const sh = 7 / k * dpr; ctx.fillStyle = '#fff'; ctx.fillRect(c[2][0] - sh, c[2][1] - sh, sh * 2, sh * 2); ctx.strokeStyle = '#000'; ctx.strokeRect(c[2][0] - sh, c[2][1] - sh, sh * 2, sh * 2);
 }
 
 function stagePoint(e) { const r = stage.getBoundingClientRect(); return [(e.clientX - r.left) / viewScale, (e.clientY - r.top) / viewScale]; }
 
 function hitTest(px, py) {
   const ctx = view.getContext('2d');
-  let solidHit = null;
+  let fullHit = null;
   for (const L of P().layers) {
-    if (!L.visible || L.locked || L.type === 'adjust' || S.t < L.start || S.t >= L.end) continue;
+    if (!L.visible || L.locked || L.type === 'adjust' || L.type === 'audio' || S.t < L.start || S.t >= L.end) continue;
     const tr = evalTransform(L, S.t), b = layerBounds(L, P(), ctx);
-    const a = -tr.rotation * Math.PI / 180, dx = px - tr.x, dy = py - tr.y;
-    const lx = (dx * Math.cos(a) - dy * Math.sin(a)) / (tr.scale || 1e-6), ly = (dx * Math.sin(a) + dy * Math.cos(a)) / (tr.scale || 1e-6);
+    const [lx, ly] = toLocal(L, px, py);
     const pad = 12 / (viewScale * (tr.scale || 1));
-    if (Math.abs(lx) <= b.w / 2 + pad && Math.abs(ly) <= b.h / 2 + pad) { if (L.type === 'solid') { solidHit = solidHit || L; continue; } return L; }
+    if (Math.abs(lx) <= b.w / 2 + pad && Math.abs(ly) <= b.h / 2 + pad) { if (L.type === 'solid' || L.type === 'draw') { fullHit = fullHit || L; continue; } return L; }
   }
-  return solidHit;
+  return fullHit;
 }
 
 const ptrs = new Map(); let gesture = null;
@@ -176,22 +270,42 @@ stage.addEventListener('pointerdown', e => {
   const [px, py] = stagePoint(e); ptrs.set(e.pointerId, [px, py]);
   if (S.playing) togglePlay(false);
   const L = selLayer();
+  if (S.picking) { // eyedropper
+    S.picking = false;
+    const d = view.getContext('2d').getImageData(Math.floor(px / P().w * view.width), Math.floor(py / P().h * view.height), 1, 1).data;
+    S.draw.color = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join(''); renderPanel(); gesture = null; return;
+  }
+  if (S.tab === 'draw' && L?.type === 'draw') {
+    if (ptrs.size > 1) { if (gesture?.mode === 'stroke') { L.draw.strokes.pop(); drawFrame(); } gesture = null; return; }
+    if (S.draw.tool === 'smudge') { toast('Smudge: coming soon'); return; }
+    const st = { tool: S.draw.tool, color: S.draw.color, size: S.draw.size, pts: [toLocal(L, px, py).map(v => +v.toFixed(1))] };
+    L.draw.strokes.push(st); gesture = { mode: 'stroke', L, st }; drawFrame(); return;
+  }
+  if (S.tab === 'points' && L?.type === 'shape' && L.shape.kind === 'path') {
+    if (ptrs.size > 1) return;
+    const pts = L.shape.pts, tol = 22 / viewScale;
+    const i = pts.findIndex(p => { const w = toWorld(L, p[0], p[1]); return Math.hypot(w[0] - px, w[1] - py) < tol; });
+    if (i >= 0) gesture = { mode: 'point', L, i, moved: false };
+    else { S.cursor = [px, py]; pts.push(toLocal(L, px, py).map(v => +v.toFixed(1))); gesture = { mode: 'point', L, i: pts.length - 1, moved: true }; }
+    drawFrame(); renderPanel(); return;
+  }
+  if (S.tab === 'points' || S.tab === 'draw') return;
   if (ptrs.size === 2 && L) {
     const [a, b] = [...ptrs.values()];
     gesture = { mode: 'pinch', L, d0: Math.hypot(b[0] - a[0], b[1] - a[1]), a0: Math.atan2(b[1] - a[1], b[0] - a[0]), s0: valueAt(L, 'scale', S.t), r0: valueAt(L, 'rotation', S.t) };
     return;
   }
   if (ptrs.size > 1) return;
-  if (L && L.type !== 'adjust' && S.t >= L.start && S.t < L.end) {
+  if (L && L.type !== 'adjust' && L.type !== 'audio' && S.t >= L.start && S.t < L.end) {
     const g = layerCorners(L), tol = 22 / viewScale;
     if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: Math.atan2(py - g.tr.y, px - g.tr.x) }; return; }
     if (Math.hypot(px - g.corners[2][0], py - g.corners[2][1]) < tol) { gesture = { mode: 'scale', L, s0: valueAt(L, 'scale', S.t), d0: Math.hypot(px - g.tr.x, py - g.tr.y) }; return; }
   }
   const hit = hitTest(px, py);
   if (hit) {
-    if (hit.id !== S.sel) { S.sel = hit.id; S.selKeys.clear(); renderTimeline(); renderPanel(); }
+    if (hit.id !== S.sel) selectLayer(hit.id);
     gesture = { mode: 'move', L: hit, x0: valueAt(hit, 'x', S.t), y0: valueAt(hit, 'y', S.t), px, py, moved: false };
-  } else { S.sel = null; S.selKeys.clear(); gesture = null; renderTimeline(); renderPanel(); }
+  } else { gesture = null; if (S.sel) deselect(); }
   drawOverlay();
 });
 stage.addEventListener('pointermove', e => {
@@ -199,6 +313,12 @@ stage.addEventListener('pointermove', e => {
   const [px, py] = stagePoint(e); ptrs.set(e.pointerId, [px, py]);
   if (!gesture) return;
   const { L } = gesture;
+  if (gesture.mode === 'stroke') {
+    const lp = toLocal(L, px, py), last = gesture.st.pts[gesture.st.pts.length - 1];
+    if (Math.hypot(lp[0] - last[0], lp[1] - last[1]) > 2 / viewScale) { gesture.st.pts.push(lp.map(v => +v.toFixed(1))); drawFrame(); }
+    return;
+  }
+  if (gesture.mode === 'point') { L.shape.pts[gesture.i] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
   if (gesture.mode === 'move') {
     let nx = gesture.x0 + px - gesture.px, ny = gesture.y0 + py - gesture.py;
     const snap = 10 / viewScale;
@@ -222,7 +342,7 @@ stage.addEventListener('pointermove', e => {
 });
 const endPtr = e => {
   ptrs.delete(e.pointerId);
-  if (gesture && ptrs.size === 0) { if (gesture.moved) commit(); gesture = null; }
+  if (gesture && ptrs.size === 0) { if (gesture.moved || gesture.mode === 'stroke') commit(); gesture = null; }
 };
 stage.addEventListener('pointerup', endPtr); stage.addEventListener('pointercancel', endPtr);
 
@@ -239,32 +359,38 @@ function loop(ts) {
   const dt = Math.min(0.25, (ts - lastTs) / 1000); lastTs = ts;
   S.t += dt;
   if (S.t >= P().duration) { if (S.loop) S.t = 0; else { S.t = P().duration; togglePlay(false); } }
-  drawFrame(); movePlayhead(); updateTC();
+  drawFrame(); syncScroll(); updateTC();
   requestAnimationFrame(loop);
 }
 function seek(t) {
   S.t = Math.max(0, Math.min(P().duration, t));
-  drawFrame(); movePlayhead(); updateTC(); renderPanelIfTime();
+  drawFrame(); syncScroll(); updateTC(); renderPanelIfTime(); updateHeader();
 }
 let panelTimer;
-function renderPanelIfTime() { if (['layer', 'ease'].includes(S.tab)) { clearTimeout(panelTimer); panelTimer = setTimeout(renderPanel, 60); } }
+function renderPanelIfTime() { if (['layer', 'ease', 'blend'].includes(S.tab)) { clearTimeout(panelTimer); panelTimer = setTimeout(renderPanel, 60); } }
 
-const tc = t => { const m = Math.floor(t / 60), s = t - m * 60; return `${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`; };
-function updateTC() { $('#tc').textContent = tc(S.t); const f = Math.floor(S.t * P().fps); $('#frame').textContent = 'F' + String(f).padStart(3, '0'); }
+const pad2 = n => String(n).padStart(2, '0');
+const tc = t => { const m = Math.floor(t / 60), s = t - m * 60; return `${pad2(m)}:${s.toFixed(2).padStart(5, '0')}`; };
+const tcF = t => { const f = P().fps, tot = Math.round(t * f), s = Math.floor(tot / f); return `${pad2(Math.floor(s / 60))}:${pad2(s % 60)}:${pad2(tot % f)}`; };
+function updateTC() { $('#tcPill').textContent = tcF(S.t); }
 function updateTransport() {
   $('#btnPlay').replaceChildren(icon(S.playing ? 'pause' : 'play'));
   $('#btnPlay').classList.toggle('on', S.playing);
-  $('#btnLoop').classList.toggle('on', S.loop);
-  $('#dur').textContent = tc(P().duration);
-  const L = selLayer();
-  const at = L && ANIM_PROPS.some(p => findKey(L, p, S.t));
-  $('#btnKey').classList.toggle('on', !!at);
-  $('#btnKey').disabled = !L || L.type === 'adjust' && false;
+  $('#btnUndo').disabled = !history.canUndo(); $('#btnRedo').disabled = !history.canRedo();
+  $('#btnFit').classList.toggle('on', S.full);
   updateTC();
 }
+const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
+const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
 function updateHeader() {
-  $('#projName').value = P().name;
-  $('#btnUndo').disabled = !history.canUndo(); $('#btnRedo').disabled = !history.canRedo();
+  const p = P(), L = selLayer();
+  if (document.activeElement !== $('#projName')) $('#projName').value = p.name;
+  if (document.activeElement !== $('#layerName')) $('#layerName').value = L ? L.name : '';
+  $('#topTitle').textContent = S.tab === 'edit' ? (EDIT_TITLE[L?.type] || 'Edit') : SUB_TITLE[S.tab] || '';
+  const keyable = L && isSub() && !['project', 'draw'].includes(S.tab) && L.type !== 'audio';
+  $('#btnKey').hidden = !keyable; $('#btnPtAdd').hidden = S.tab !== 'points';
+  $('#btnKey').classList.toggle('on', !!(keyable && ANIM_PROPS.some(pr => findKey(L, pr, S.t))));
+  $('#btnMore').disabled = !L;
 }
 
 function toggleKeyAll() {
@@ -276,34 +402,41 @@ function toggleKeyAll() {
 }
 
 // ---------------- timeline ----------------
+// Alight-style: the playhead is fixed at the horizontal centre of the timeline and the tracks scroll underneath it, so
+// scrollLeft == t * pps (t = 0 sits at the centre when scrollLeft is 0). Panning the timeline scrubs; seeking / playback
+// scroll it. The virtual canvas extends past the project end (shaded, draggable END marker) and grows while panning.
 const tl = $('#tlScroll');
-function movePlayhead() {
-  const x = tlOriginX() + S.t * S.pps;
-  $('#playhead').style.transform = `translateX(${x}px)`;
-  if (S.playing) {
-    const vw = tl.clientWidth;
-    if (x > tl.scrollLeft + vw - 30 || x < tl.scrollLeft + LABEL_W()) tl.scrollLeft = Math.max(0, x - LABEL_W() - 20);
-  }
+const tlOriginX = () => Math.round(tl.clientWidth / 2); // content x of t = 0
+function syncScroll() {
+  const x = S.t * S.pps;
+  if (x > tl.scrollWidth - tl.clientWidth) roomFor(x, false);
+  if (Math.abs(tl.scrollLeft - x) >= 0.5) tl.scrollLeft = x;
 }
-// The timeline is a virtual canvas wider than the project: it spans max(duration, furthest clip/key) + 1.5 screens and
-// grows while you pan to the right (up to +4 screens) or auto-scroll during a drag (unbounded). The region past the
-// project end is shaded with an END marker (draggable to change the duration). Clips may extend past the end; playback
-// and export simply stop at the duration.
-function deselect() { S.sel = null; S.selKeys.clear(); renderTimeline(); renderPanel(); drawOverlay(); }
-const tickStep = () => (S.pps > 120 ? 0.25 : S.pps > 50 ? 0.5 : S.pps > 22 ? 1 : 2);
-const viewT = () => Math.max(1, tl.clientWidth - LABEL_W() - 12) / S.pps; // one screen of time
+let syncRaf = 0;
+function onTlScroll() {
+  if (!P() || G.rendering) return;
+  if (S.playing && !(G.g || G.mom || G.pinch)) return; // playback drives the scroll, not the other way round
+  const want = S.t * S.pps, dur = P().duration;
+  if (Math.abs(tl.scrollLeft - want) < 1) return;
+  if (S.t >= dur - 1e-9 && tl.scrollLeft > want) return; // panned past the end: the playhead stays at the end
+  S.t = Math.max(0, Math.min(dur, tl.scrollLeft / S.pps));
+  updateTC();
+  if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; drawFrame(); updateHeader(); renderPanelIfTime(); });
+}
+const viewT = () => Math.max(1, tl.clientWidth) / S.pps; // one screen of time
 function contentEnd(p = P()) {
   let e = p.duration;
   for (const L of p.layers) { e = Math.max(e, L.end); for (const { k } of allKeys(L)) e = Math.max(e, k.t); }
   return e;
 }
 const MAX_INNER_PX = 400000;
+const majStep = () => (S.pps >= 24 ? 1 : S.pps >= 8 ? 5 : 10);
+const minStep = () => (S.pps >= 50 ? 0.1 : S.pps >= 24 ? 0.25 : majStep() / 5);
 function addTicks(ruler, from, to) {
-  const step = tickStep();
+  const step = majStep();
   for (let i = Math.ceil(from / step - 1e-6); i * step <= to + 1e-6; i++) {
     const t = i * step; if (t <= (ruler._tickTo ?? -1) + 1e-6) continue;
-    const major = Math.abs(t - Math.round(t)) < 1e-6;
-    ruler.append(h('i', { class: major ? 'maj' : '', style: { left: t * S.pps + 'px' } }, major ? String(Math.round(t)) + 's' : ''));
+    ruler.append(h('i', { class: 'maj', style: { left: t * S.pps + 'px' } }, String(Math.round(t)) + 's'));
   }
   ruler._tickTo = Math.max(ruler._tickTo ?? -1, to);
 }
@@ -330,37 +463,56 @@ function placeEnd() {
   if (rp) rp.style.left = x + 'px';
   if (hd) hd.style.left = x + 'px';
 }
+// small per-layer preview (pill thumbnail / media clip frames), cached by layer content
+const THUMB = { r: null, cache: new Map() };
+function layerThumb(L) {
+  if (L.type === 'audio' || L.type === 'adjust') return null;
+  const p = P(), key = JSON.stringify([p.w, p.h, L.type, L.shape, L.text, L.solid, L.media, L.draw, L.props, media.has(L.media?.id)]);
+  if (THUMB.cache.has(key)) return THUMB.cache.get(key);
+  let url = null;
+  try {
+    const k = 64 / Math.max(p.w, p.h), c = document.createElement('canvas');
+    c.width = Math.max(4, Math.round(p.w * k)); c.height = Math.max(4, Math.round(p.h * k));
+    THUMB.r = THUMB.r || new Renderer();
+    THUMB.r.render({ ...p, bg: '#2b2f42', layers: [{ ...L, effects: [], keys: {}, visible: true, start: 0, end: 1e9, blend: 'normal', shadow: null }] }, 0, c);
+    url = c.toDataURL();
+  } catch (e) { console.warn(e); }
+  if (THUMB.cache.size > 300) THUMB.cache.clear();
+  THUMB.cache.set(key, url);
+  return url;
+}
+const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio' };
 function renderTimeline() {
   const p = P(); if (!p) return;
-  const lw = LABEL_W();
-  if (S.autoFit && tl.clientWidth > 0) S.pps = Math.max(12, (tl.clientWidth - lw - 48) / p.duration);
+  const ox = tlOriginX();
+  if (S.autoFit && tl.clientWidth > 0) S.pps = Math.max(12, (tl.clientWidth / 2 - 24) / p.duration);
   const vt = viewT(), ce = contentEnd(p);
   G.panCapT = ce + 4 * vt;
   G.extT = Math.max(ce + 1.5 * vt, G.extT || 0);
-  G.extT = Math.min(G.extT, (MAX_INNER_PX - tlOriginX()) / S.pps);
-  const inner = h('div', { id: 'tlInner', style: { width: tlOriginX() + G.extT * S.pps + 'px', '--lw': lw + 'px', '--rb': '0px' } });
-  // grid across the whole extent (major line per second, minor per half second)
-  inner.append(h('div', { class: 'tl-grid', style: { left: tlOriginX() + 'px', backgroundSize: `${S.pps}px 100%, ${S.pps / 2}px 100%` } }));
-  // ruler (+ shaded region past the end and the draggable END marker)
-  const ruler = h('div', { class: 'tl-ruler', 'data-testid': 'ruler' });
+  G.extT = Math.min(G.extT, (MAX_INNER_PX - ox) / S.pps);
+  const inner = h('div', { id: 'tlInner', style: { width: ox + G.extT * S.pps + 'px', '--ox': ox + 'px', '--rb': '0px' } });
+  // head: ruler (minor ticks as a gradient, major ticks as elements) + the band the timecode pill sits in
+  const mpx = minStep() * S.pps;
+  const ruler = h('div', { class: 'tl-ruler', 'data-testid': 'ruler', style: { backgroundSize: `${mpx}px 6px` } });
   ruler.append(h('div', { class: 'tl-past r', id: 'tlPastR' }));
   addTicks(ruler, 0, G.extT);
   const endH = h('div', { class: 'tl-end-h', id: 'tlEndH', 'data-testid': 'end-marker', title: 'Drag to change the project duration' }, h('span', {}, 'END'));
   bindEnd(endH); ruler.append(endH);
-  inner.append(h('div', { class: 'tl-row tl-head' }, h('div', { class: 'tl-label corner' }, `${p.layers.length} Layers`), ruler));
+  inner.append(h('div', { class: 'tl-head' }, ruler));
   bindScrub(ruler);
   for (const L of p.layers) {
-    const sel = L.id === S.sel;
-    const label = h('div', { class: 'tl-label', onclick: () => { S.sel = L.id; S.selKeys.clear(); if (S.tab === 'add') S.tab = 'layer'; refreshAll(); } },
-      h('button', { class: 'vis', title: 'Visibility', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
-      icon(TYPE_ICON[L.type] || 'layer', 'ti'), h('span', { class: 'ln t-' + L.type }, L.name));
+    const sel = L.id === S.sel, th = layerThumb(L);
+    const label = h('div', { class: 'tl-label', onclick: () => selectLayer(L.id) },
+      h('button', { class: 'vis' + (L.visible ? '' : ' off'), title: 'Visibility', 'data-testid': 'vis', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
+      th ? h('img', { class: 'th', src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
     const track = h('div', { class: 'tl-track' });
-    track.addEventListener('click', e => { if (e.target === track) { if (S.sel) return deselect(); const r = track.getBoundingClientRect(); seek((e.clientX - r.left) / S.pps); } });
-    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden'), style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px' } },
-      h('b', { class: 'trim l' }), h('span', { class: 'cn' }, L.name), h('b', { class: 'trim r' }));
+    track.addEventListener('click', e => { if (e.target === track && S.sel) deselect(); });
+    const strip = (L.type === 'image' || L.type === 'video') && th ? { backgroundImage: `url(${th})` } : {};
+    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : ''), style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip } },
+      h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
     bindClip(clip, L);
     track.append(clip);
-    // merged diamonds
+    // merged keyframe diamonds (one per time)
     const times = new Map();
     for (const { prop, k } of allKeys(L)) { const key = k.t.toFixed(3); if (!times.has(key)) times.set(key, []); times.get(key).push({ prop, k }); }
     for (const [tk, list] of times) {
@@ -369,35 +521,33 @@ function renderTimeline() {
       bindKey(d, L, list); track.append(d);
     }
     inner.append(h('div', { class: 'tl-row' + (sel ? ' sel' : ''), 'data-layer': L.id }, label, track));
-    if (sel) {
-      for (const prop of ANIM_PROPS.filter(pp => hasKeys(L, pp))) {
-        const st = h('div', { class: 'tl-track sub' });
-        for (const k of L.keys[prop]) {
-          const d = h('i', { class: 'kf sm' + (S.selKeys.has(k.id) ? ' on' : ''), style: { left: k.t * S.pps + 'px' } });
-          bindKey(d, L, [{ prop, k }]); st.append(d);
-        }
-        inner.append(h('div', { class: 'tl-row subrow' }, h('div', { class: 'tl-label sub' }, PROP_META[prop].label), st));
-      }
-    }
   }
   if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap + to add a layer'));
-  // empty space below the last track (pannable, keeps the grid going)
+  // empty space below the last track (pannable)
   inner.append(h('div', { class: 'tl-row tl-pad', 'data-testid': 'tl-pad', style: { height: Math.max(44, Math.round(tl.clientHeight * 0.45)) + 'px' } },
     h('div', { class: 'tl-label pad' }), h('div', { class: 'tl-track pad', onclick: () => S.sel && deselect() })));
   inner.append(h('div', { class: 'tl-past', id: 'tlPast' }));
-  inner.append(h('div', { id: 'playhead' }, h('span')));
   const sl = tl.scrollLeft, st = tl.scrollTop;
-  tl.replaceChildren(inner); tl.scrollLeft = sl; tl.scrollTop = st;
-  placeEnd(); movePlayhead(); G.updBars?.();
+  G.rendering = true;
+  tl.replaceChildren(inner);
+  const want = S.t * S.pps;
+  if (want > tl.scrollWidth - tl.clientWidth) roomFor(want, false);
+  // keep a pan that is parked past the project end; otherwise the playhead time decides the scroll position
+  tl.scrollLeft = S.t >= p.duration - 1e-9 && sl > want && !G.zoomed ? sl : want;
+  tl.scrollTop = st;
+  if (S.sel && G.lastSel !== S.sel) { const row = inner.querySelector(`.tl-row[data-layer="${S.sel}"]`); if (row) tl.scrollTop = row.offsetTop - HEAD_H; }
+  G.lastSel = S.sel; G.zoomed = false;
+  G.rendering = false;
+  placeEnd(); G.updBars?.();
 }
-const scrubAt = (el, clientX) => seek((clientX - el.getBoundingClientRect().left) / S.pps);
+// desktop mouse on the ruler: drag to scrub (= pan, the playhead is fixed)
 function bindScrub(el) {
   el.addEventListener('pointerdown', e => {
     if (e.pointerType !== 'mouse') return; // touch/pen: handled by the timeline gesture controller below
     el.setPointerCapture(e.pointerId); if (S.playing) togglePlay(false);
-    const mv = ev => scrubAt(el, ev.clientX);
-    mv(e);
-    const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+    const x0 = e.clientX, sl0 = tl.scrollLeft;
+    const mv = ev => panX(sl0 - (ev.clientX - x0));
+    const up = () => { releaseRb(); el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
     el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
   });
 }
@@ -417,30 +567,24 @@ function bindDrag(el, spec) {
   });
 }
 
+
 // ---------------- timeline touch gestures ----------------
 // One controller for every touch/pen pointer on the timeline (touch-action: none, so the browser never scrolls it):
-//  * swipe anywhere (track, labels, clips, keyframes, empty space below / past the end) -> pan x/y with axis lock + momentum;
-//    pan is not clamped to the content: the virtual extent grows to the right and rubber-bands a little left of 0
+//  * swipe anywhere (ruler, pills, clips, keyframes, empty space below / past the end) -> pan x/y with axis lock + momentum;
+//    horizontal panning scrubs (fixed centre playhead); the virtual extent grows to the right and rubber-bands left of 0
 //  * long press (300ms, <8px) on a clip / trim handle / keyframe -> grab it (visual pop + vibrate), then drag;
 //    dragging near the left/right edge auto-scrolls the timeline (clips/keys can go past the project end)
 //  * trim handles of the selected clip and the END marker drag right away; clips and keyframes always need the long press
 //  * while a layer is selected, panning is horizontal only (tap empty track space to deselect and unlock vertical)
-//  * tap -> select (clips/keys) or the normal click (labels; empty track = deselect, or seek when nothing is selected)
-//  * ruler -> scrub (END marker on the ruler drags the duration); two fingers anywhere -> pinch-zoom time around the fingers
+//  * tap -> select (clips/keys/pills) or deselect (empty track); two fingers anywhere -> pinch-zoom time around the playhead
 const SLOP = 8, HOLD_MS = 300, ZMIN = 12, ZMAX = 800;
-const G = { ptrs: new Map(), g: null, pinch: null, mom: 0, raf: 0, noClick: false, extT: 0, panCapT: 0, rb: 0 };
-const tlOriginX = () => LABEL_W() + 12; // content x of t=0
-function zoomTo(pps, clientX, anchorT) {
+const G = { ptrs: new Map(), g: null, pinch: null, mom: 0, raf: 0, noClick: false, extT: 0, panCapT: 0, rb: 0, lastSel: null, rendering: false, zoomed: false };
+function zoomTo(pps) {
   pps = Math.max(ZMIN, Math.min(ZMAX, pps));
-  const r = tl.getBoundingClientRect(), vx = clientX - r.left;
-  const t = anchorT ?? (vx + tl.scrollLeft - tlOriginX()) / S.pps;
-  S.autoFit = false; S.pps = pps; renderTimeline();
-  const x = Math.max(0, tlOriginX() + t * pps - vx);
-  if (x > tl.scrollWidth - tl.clientWidth) roomFor(x, false);
-  tl.scrollLeft = x;
+  S.autoFit = false; S.pps = pps; G.zoomed = true; renderTimeline();
 }
 function stopMomentum() { cancelAnimationFrame(G.mom); G.mom = 0; }
-// rubber band left of t=0: the time content (ruler, tracks, grid, playhead) is translated by --rb with resistance
+// rubber band left of t=0: the time content (ruler, tracks, past-end shade) is translated by --rb with resistance
 function setRb(v) { G.rb = v; const inner = $('#tlInner'); if (inner) { inner.classList.remove('rb-back'); inner.classList.toggle('rb', v > 0); inner.style.setProperty('--rb', v + 'px'); } }
 function releaseRb() {
   if (!G.rb) return; const inner = $('#tlInner'); G.rb = 0;
@@ -456,7 +600,7 @@ function panX(x) {
 // edge auto-scroll while dragging a clip / trim / keyframe / END marker
 const AS = { raf: 0, x: 0, fn: null, ts: 0 };
 function edgeK(x) {
-  const r = tl.getBoundingClientRect(), E = Math.min(56, r.width * 0.12), lo = r.left + LABEL_W(), hi = r.right;
+  const r = tl.getBoundingClientRect(), E = Math.min(56, r.width * 0.12), lo = r.left + PILL_W, hi = r.right;
   if (x > hi - E) return Math.min(1, (x - (hi - E)) / E);
   if (x < lo + E) return -Math.min(1, (lo + E - x) / E);
   return 0;
@@ -505,28 +649,28 @@ function pinchState() {
   return { d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
 }
 function bindTimelineGestures() {
+  tl.addEventListener('scroll', onTlScroll, { passive: true });
   tl.addEventListener('pointerdown', e => {
     if (e.pointerType === 'mouse') return;
     e.preventDefault(); stopMomentum(); G.noClick = false;
+    if (S.playing) togglePlay(false);
     try { tl.setPointerCapture(e.pointerId); } catch {}
     G.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (G.ptrs.size === 2) { // second finger -> pinch; abandon whatever the first finger was doing
       const g = G.g; G.g = null;
       if (g) { clearTimeout(g.hold); if (g.mode === 'drag') endDrag(g, e); }
-      const ps = pinchState(), r = tl.getBoundingClientRect();
-      G.pinch = { ...ps, pps0: S.pps, t: (ps.mx - r.left + tl.scrollLeft - tlOriginX()) / S.pps, st0: tl.scrollTop };
+      G.pinch = { ...pinchState(), pps0: S.pps, st0: tl.scrollTop };
       G.noClick = true; return;
     }
     if (G.ptrs.size > 2 || G.pinch) return;
-    const hit = e.target.closest('.kf, .clip, .tl-end-h, .tl-ruler');
+    const hit = e.target.closest('.kf, .clip, .tl-end-h');
     const g = G.g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, sl: tl.scrollLeft, st: tl.scrollTop, mode: 'pending', target: e.target,
       samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }], moved: false };
-    if (hit?.classList.contains('tl-ruler')) { g.mode = 'scrub'; g.ruler = hit; if (S.playing) togglePlay(false); scrubAt(hit, e.clientX); return; }
     if (hit?._drag) {
       g.item = hit; g.spec = hit._drag; g.isKey = hit.classList.contains('kf'); g.isTrim = e.target.classList.contains('trim') || hit.classList.contains('tl-end-h');
       // only trim handles of the selected clip and the END marker drag straight away; moving a clip or a keyframe always needs a long press
       g.armed = (g.isTrim && hit.classList.contains('sel')) || hit.classList.contains('tl-end-h');
-      g.hold = setTimeout(() => { if (G.g === g && g.mode === 'pending') { if (S.playing) togglePlay(false); grab(g, g.lx ?? g.x0); } }, HOLD_MS);
+      g.hold = setTimeout(() => { if (G.g === g && g.mode === 'pending') grab(g, g.lx ?? g.x0); }, HOLD_MS);
     }
   });
   tl.addEventListener('pointermove', e => {
@@ -538,8 +682,7 @@ function bindTimelineGestures() {
         G.raf = 0; if (!G.pinch || G.ptrs.size < 2) return;
         const ps = pinchState(), pz = G.pinch;
         const pps = Math.max(ZMIN, Math.min(ZMAX, pz.pps0 * ps.d / pz.d));
-        if (Math.abs(pps - S.pps) > 0.01) zoomTo(pps, ps.mx, pz.t);
-        else tl.scrollLeft = tlOriginX() + pz.t * S.pps - (ps.mx - tl.getBoundingClientRect().left);
+        if (Math.abs(pps - S.pps) > 0.01) zoomTo(pps);
         if (!S.sel) tl.scrollTop = pz.st0 - (ps.my - pz.my);
       });
       return;
@@ -548,7 +691,6 @@ function bindTimelineGestures() {
     const dx = e.clientX - g.x0, dy = e.clientY - g.y0, now = performance.now();
     g.lx = e.clientX; g.samples.push({ x: e.clientX, y: e.clientY, t: now });
     while (g.samples.length > 2 && now - g.samples[0].t > 150) g.samples.shift();
-    if (g.mode === 'scrub') return scrubAt(g.ruler, e.clientX);
     if (g.mode === 'pending') {
       if (Math.hypot(dx, dy) < SLOP) return;
       clearTimeout(g.hold);
@@ -575,11 +717,11 @@ function bindTimelineGestures() {
   };
   tl.addEventListener('pointerup', up); tl.addEventListener('pointercancel', up);
   tl.addEventListener('lostpointercapture', up);
-  // a pan / drag / pinch must not end in a click (seek on empty track, select on label)
+  // a pan / drag / pinch must not end in a click (deselect on empty track, select on a pill)
   tl.addEventListener('click', e => { if (G.noClick) { G.noClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
   tl.addEventListener('contextmenu', e => e.preventDefault());
-  // desktop: ctrl/trackpad-pinch wheel zooms time around the cursor
-  tl.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoomTo(S.pps * Math.exp(-e.deltaY * 0.01), e.clientX); }, { passive: false });
+  // desktop: ctrl/trackpad-pinch wheel zooms time around the playhead
+  tl.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoomTo(S.pps * Math.exp(-e.deltaY * 0.01)); }, { passive: false });
   // scroll indicators (iOS hides native ones on a JS-panned box)
   const bx = h('div', { class: 'tl-sb x' }, h('i')), by = h('div', { class: 'tl-sb y' }, h('i'));
   $('#timeline').append(bx, by);
@@ -590,13 +732,13 @@ function bindTimelineGestures() {
     if (!bx.hidden) { const w = Math.max(24, cw * cw / W); bx.firstChild.style.cssText = `width:${w}px;transform:translateX(${(cw - w) * tl.scrollLeft / (W - cw)}px)`; }
     if (!by.hidden) { const hh = Math.max(16, ch * ch / H); by.firstChild.style.cssText = `height:${hh}px;transform:translateY(${(ch - hh) * tl.scrollTop / (H - ch)}px)`; }
   };
-  tl.addEventListener('scroll', () => { upd(); $('#timeline').classList.add('scrolling'); clearTimeout(hideT); hideT = setTimeout(() => $('#timeline').classList.remove('scrolling'), 700); }, { passive: true });
+  tl.addEventListener('scroll', () => { upd(); if (!(G.g || G.mom || G.pinch || AS.raf)) return; $('#timeline').classList.add('scrolling'); clearTimeout(hideT); hideT = setTimeout(() => $('#timeline').classList.remove('scrolling'), 700); }, { passive: true });
   new ResizeObserver(upd).observe(tl);
   G.updBars = upd;
 }
 // Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
 function lockPage() {
-  const scrollable = t => t.closest?.('#panelBody, dialog, textarea, select, input');
+  const scrollable = t => t.closest?.('#panelBody, .tiles, .sh-body, .h-list, dialog, textarea, select, input');
   document.addEventListener('touchmove', e => { if (e.cancelable && (e.touches.length > 1 || !scrollable(e.target))) e.preventDefault(); }, { passive: false });
   for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
@@ -613,7 +755,7 @@ function bindClip(clip, L) {
       clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px';
       setExtent(L.end + viewT()); drawFrame();
     },
-    onEnd: moved => { if (moved) commit(); else { S.sel = L.id; S.selKeys.clear(); if (S.tab === 'add') S.tab = 'layer'; refreshAll(); } },
+    onEnd: moved => { if (moved) commit(); else selectLayer(L.id); },
   });
 }
 function bindKey(d, L, list) {
@@ -623,7 +765,7 @@ function bindKey(d, L, list) {
     onEnd: (moved, c, ev) => {
       S.sel = L.id;
       if (moved) { for (const p of new Set(list.map(x => x.prop))) L.keys[p].sort((a, b) => a.t - b.t); }
-      else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = list[0].k.t; if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
+      else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = Math.min(P().duration, list[0].k.t); if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
       commit();
     },
   });
@@ -635,113 +777,133 @@ function bindEnd(el) {
     onStart: () => ({ d0: P().duration }),
     onMove: (dt, c) => {
       P().duration = Math.max(0.5, Math.min(600, snapT(c.d0 + dt)));
-      placeEnd(); setExtent(P().duration + viewT()); $('#dur').textContent = tc(P().duration);
+      placeEnd(); setExtent(P().duration + viewT());
     },
     onEnd: moved => { if (!moved) return; S.autoFit = false; if (S.t > P().duration) S.t = P().duration; commit(); },
   });
 }
 
-// ---------------- panels ----------------
-const TABS = [['add', 'Add', 'plus'], ['layer', 'Move & Transform', 'move'], ['style', 'Color & Fill', 'fill'], ['border', 'Border & Shadow', 'border'], ['fx', 'Effects', 'fx'], ['blend', 'Blending & Opacity', 'blend'], ['ease', 'Keyframes', 'kfs']];
-const TAB_TITLE = { add: 'Add', layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Keyframes', project: 'Project Settings' };
-const TYPE_ICON = { shape: 'rect', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust' };
-function pickTab(id) { S.tab = S.tab === id && isMobile() ? null : id; renderTabs(); renderPanel(); requestAnimationFrame(() => { layoutStage(); drawFrame(); }); }
-function renderTabs() {
-  const mk = () => TABS.map(([id, label, ic]) => h('button', { class: 'tab' + (id === 'add' ? ' tab-add' : '') + (S.tab === id ? ' on' : ''), 'data-tab': id, 'data-testid': 'tab-' + id, title: label, onclick: () => pickTab(id) }, icon(ic), id === 'add' ? null : h('span', {}, label)));
-  const sl = $('#tabs').scrollLeft; $('#tabs').replaceChildren(...mk()); $('#tabs').scrollLeft = sl;
-  $('#btnSettings').classList.toggle('on', S.tab === 'project');
-  $('#panelTitle').textContent = TAB_TITLE[S.tab] || '';
-  document.body.classList.toggle('panel-open', !!S.tab);
-}
-const isMobile = () => window.innerWidth < 900;
-
+// ---------------- bottom panel: tile grid (layer selected) / property sub-panels ----------------
 function liveSet(fn) { return v => { fn(v); drawFrame(); }; }
-
 function renderPanel() {
-  const body = $('#panelBody'); if (!P()) return;
-  const L = selLayer();
+  const panel = $('#panel'); if (!P()) return;
+  const m = mode(), L = selLayer();
+  const keepScroll = sel => { const el = panel.querySelector(sel); return el ? el.scrollTop : 0; };
+  if (m === 'none') { panel.replaceChildren(); return; }
+  if (m === 'sel') { const st = keepScroll('.tiles'); panel.replaceChildren(tileGrid(L)); panel.querySelector('.tiles').scrollTop = st; return; }
+  const st = keepScroll('#panelBody');
   const need = msg => h('div', { class: 'hint' }, msg);
-  let content;
+  let content, left = [], right = null;
   switch (S.tab) {
-    case 'add': content = panelAdd(); break;
-    case 'layer': content = L ? panelLayer(L) : need('Select a layer on the canvas or timeline.'); break;
-    case 'style': content = L ? panelStyle(L) : need('Select a layer to change its color & fill.'); break;
-    case 'border': content = L ? panelBorder(L) : need('Select a layer to add a border or shadow.'); break;
-    case 'fx': content = L ? panelFx(L) : need('Select a layer (or add an Adjustment layer) to apply effects.'); break;
-    case 'blend': content = L ? panelBlend(L) : need('Select a layer to change its blend mode.'); break;
+    case 'layer': content = L ? panelLayer(L) : need('Select a layer.'); break;
+    case 'style': content = L ? panelStyle(L) : need('Select a layer.'); break;
+    case 'edit': content = L ? panelEdit(L) : need('Select a layer.'); break;
+    case 'border': content = L ? panelBorder(L) : need('Select a layer.'); break;
+    case 'fx': content = L ? panelFx(L) : need('Select a layer.'); break;
+    case 'blend': content = L ? panelBlend(L) : need('Select a layer.'); break;
     case 'ease': content = panelEase(L); break;
     case 'project': content = panelProject(); break;
+    case 'points': ({ content, left } = panelPoints(L)); break;
+    case 'draw': ({ content, right } = panelDraw(L)); break;
     default: content = h('div');
   }
-  const st = body.scrollTop; body.replaceChildren(content); body.scrollTop = st;
-  renderTabs(); updateTransport();
+  const body = h('div', { id: 'panelBody', class: 'sub-body' + (S.tab === 'points' || S.tab === 'draw' ? ' tool' : '') }, content);
+  panel.replaceChildren(h('div', { class: 'sub' },
+    h('div', { class: 'sub-l' }, h('button', { class: 'ib', title: 'Back', 'data-testid': 'panel-back', onclick: goBack }, icon('chevl')), ...left),
+    body, right));
+  body.scrollTop = st;
 }
 
-function panelAdd() {
-  const btn = (ic, label, fn, tid) => h('button', { class: 'add-btn', 'data-testid': tid, onclick: fn }, icon(ic), h('span', {}, label));
-  return h('div', {},
-    section('Shapes', h('div', { class: 'grid' },
-      ...['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line'].map(k => btn(k, k, () => addLayer(makeLayer(P(), 'shape', { kind: k })), 'add-' + k)))),
-    section('Media', h('div', { class: 'grid' },
-      btn('image', 'Image & Video', () => $('#fileMedia').click(), 'add-media'))),
-    section('Text', h('div', { class: 'grid' },
-      btn('text', 'Text', () => addLayer(makeLayer(P(), 'text')), 'add-text'))),
-    section('Audio', h('div', { class: 'grid' },
-      h('button', { class: 'add-btn', disabled: true, title: 'Audio layers are not supported yet' }, icon('audio'), h('span', {}, 'Audio (soon)')))),
-    section('Element', h('div', { class: 'grid' },
-      btn('solid', 'Solid', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
-      btn('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); L.effects.push(makeEffect('coloradj')); addLayer(L); S.tab = 'fx'; renderTabs(); renderPanel(); }, 'add-adjust'),
-      btn('demo', 'Load Demo', () => { if (confirm('Replace with a new demo project?')) setProject(demoProject(P().aspect)); }, 'add-demo'))));
+function tileGrid(L) {
+  const T = (id, ic, label, fn, cls = '') => h('button', { class: 'tile ' + cls, 'data-testid': 'tab-' + id, title: label || id, onclick: fn }, icon(ic), label ? h('span', {}, label) : null);
+  const open = id => () => openSub(id);
+  const hasSound = L.type === 'video' || L.type === 'audio', muted = hasSound && L.media.volume === 0;
+  const visual = L.type !== 'audio', drawable = !['audio', 'adjust'].includes(L.type);
+  const editIc = { text: 'edittext', image: 'editmedia', video: 'editmedia', audio: 'audio', draw: 'freehand', solid: 'fill', adjust: 'effects' }[L.type] || 'editshape';
+  const editLabel = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', draw: 'Edit Drawing', solid: 'Edit Solid', adjust: 'Edit Effects' }[L.type] || 'Edit Shape';
+  return h('div', { class: 'tiles' },
+    h('div', { class: 'trow small' },
+      T('speed', 'speed', '', soon('Speed'), 'sm corner'),
+      h('div', { class: 'tgroup' }, T('trim-start', 'splitl', '', () => splitAt(L, 'start'), 'sm'), T('split', 'split', '', () => splitAt(L, 'split'), 'sm'), T('trim-end', 'splitr', '', () => splitAt(L, 'end'), 'sm')),
+      T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
+    h('div', { class: 'trow three' },
+      T('style', 'fill', 'Color & Fill', visual ? open('style') : soon(), visual ? '' : 'off'),
+      T('border', 'border', 'Border & Shadow', drawable ? open('border') : soon(), drawable ? '' : 'off'),
+      T('blend', 'blend', 'Blending & Opacity', visual ? open('blend') : soon(), visual ? '' : 'off')),
+    h('div', { class: 'trow four' },
+      T('layer', 'move', 'Move & Transform', open('layer'), visual ? '' : 'off'),
+      T('edit', editIc, editLabel, open('edit')),
+      T('presets', 'presets', 'Presets', soon('Presets')),
+      T('fx', 'effects', 'Effects', open('fx'), visual ? '' : 'off')),
+    h('div', { class: 'trow four' },
+      T('ease', 'ease', 'Easing', open('ease')),
+      T('up', 'up', 'Move Up', () => moveLayer(L, -1)),
+      T('down', 'down', 'Move Down', () => moveLayer(L, 1)),
+      T('lock', L.locked ? 'lock' : 'unlock', L.locked ? 'Unlock' : 'Lock', () => { L.locked = !L.locked; commit(); })));
 }
 
 function propKeyState(L, prop) { return findKey(L, prop, S.t) ? 2 : hasKeys(L, prop) ? 1 : 0; }
 
 function panelLayer(L) {
   const out = h('div', {});
-  out.append(h('div', { class: 'ctl' }, h('label', {}, 'Name'), h('input', { class: 'txt', value: L.name, onchange: e => { L.name = e.target.value; commit(); } })));
-  if (L.type !== 'adjust' || true) {
-    const rows = ANIM_PROPS.map(prop => {
-      const m = PROP_META[prop];
-      const isPos = prop === 'x' || prop === 'y';
-      return slider({
-        label: m.label, value: valueAt(L, prop, S.t), min: isPos ? -P()[prop === 'x' ? 'w' : 'h'] * 0.5 : m.min, max: isPos ? P()[prop === 'x' ? 'w' : 'h'] * 1.5 : m.max, step: m.step,
-        testid: 'prop-' + prop,
-        onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: () => commit({ silent: true }) || renderTimeline(),
-        key: { state: propKeyState(L, prop), toggle: () => { const k = findKey(L, prop, S.t); if (k) removeKey(L, prop, k.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } },
-      });
+  const rows = ANIM_PROPS.map(prop => {
+    const m = PROP_META[prop];
+    const isPos = prop === 'x' || prop === 'y';
+    return slider({
+      label: m.label, value: valueAt(L, prop, S.t), min: isPos ? -P()[prop === 'x' ? 'w' : 'h'] * 0.5 : m.min, max: isPos ? P()[prop === 'x' ? 'w' : 'h'] * 1.5 : m.max, step: m.step,
+      testid: 'prop-' + prop,
+      onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: () => { commit({ silent: true }); renderTimeline(); updateHeader(); },
+      key: { state: propKeyState(L, prop), toggle: () => { const k = findKey(L, prop, S.t); if (k) removeKey(L, prop, k.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } },
     });
-    out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
-  }
+  });
+  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
   out.append(section('Timing',
     slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.start = Math.min(v, L.end - 0.05); }), onChange: () => commit() }),
     slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
-  const act = (ic, label, fn, tid) => h('button', { class: 'act', onclick: fn, 'data-testid': tid }, icon(ic), label);
-  const ix = P().layers.indexOf(L);
+  const act = (ic, label, fn) => h('button', { class: 'act', onclick: fn }, icon(ic), label);
   out.append(h('div', { class: 'acts' },
     act('center', 'Center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
-    act('up', 'Up', () => { if (ix > 0) { P().layers.splice(ix, 1); P().layers.splice(ix - 1, 0, L); commit(); } }),
-    act('down', 'Down', () => { if (ix < P().layers.length - 1) { P().layers.splice(ix, 1); P().layers.splice(ix + 1, 0, L); commit(); } }),
-    act('dup', 'Duplicate', () => { const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); c.effects.forEach(f => (f.id = uid())); P().layers.splice(ix, 0, c); S.sel = c.id; commit(); }, 'dup-layer'),
-    act(L.locked ? 'key' : 'key', L.locked ? 'Unlock' : 'Lock', () => { L.locked = !L.locked; commit(); }),
-    act('trash', 'Delete', () => { P().layers.splice(ix, 1); S.sel = null; S.selKeys.clear(); commit(); }, 'del-layer')));
+    act('up', 'Up', () => moveLayer(L, -1)), act('down', 'Down', () => moveLayer(L, 1)),
+    act(L.locked ? 'lock' : 'unlock', L.locked ? 'Unlock' : 'Lock', () => { L.locked = !L.locked; commit(); })));
   return out;
 }
 
-function panelStyle(L) {
-  const out = h('div', {});
+const SHAPE_KINDS = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line', 'cross', 'arrow', 'heart', 'pie', 'half', 'trapezoid', 'flower'];
+function fieldMakers(L) {
   const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
-  const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => commit({ silent: true }) });
+  const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => { commit({ silent: true }); renderTimeline(); } });
   const T = (label, obj, k) => toggle({ label, value: obj[k], onChange: v => { obj[k] = v; commit(); } });
+  return { C, N, T };
+}
+function panelStyle(L) {
+  const out = h('div', {}), { C, N, T } = fieldMakers(L);
+  if (L.type === 'shape') {
+    const s = L.shape;
+    out.append(section('Fill', T('Fill', s, 'fillOn'), C('Color', s, 'fill'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+  } else if (L.type === 'text') out.append(section('Color', C('Fill', L.text, 'fill')));
+  else if (L.type === 'solid') {
+    const s = L.solid;
+    out.append(section('Solid', C('Color', s, 'color'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+  } else if (L.type === 'draw') out.append(h('div', { class: 'hint' }, 'Drawing colours are picked per stroke in Edit Drawing.'), h('button', { class: 'act', onclick: () => openSub('draw') }, icon('freehand'), 'Edit Drawing'));
+  else if (L.type === 'image' || L.type === 'video') out.append(h('div', { class: 'hint' }, 'Media layers keep their own colours — try Effects › Color Adjust.'));
+  else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no fill — add effects; they apply to everything below.'));
+  return out;
+}
+function panelEdit(L) {
+  const out = h('div', {}), { N } = fieldMakers(L);
   const big = Math.max(P().w, P().h) * 1.5;
   if (L.type === 'shape') {
     const s = L.shape;
-    out.append(section('Shape', chips(['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line'].map(k => [k, k]), s.kind, v => { s.kind = v; commit(); }),
+    out.append(section('Shape', chips(SHAPE_KINDS.map(k => [k, k]), s.kind, v => { s.kind = v; commit(); }),
       N('Width', s, 'w', 1, big), N('Height', s, 'h', 1, big),
       s.kind === 'rect' ? N('Corner', s, 'radius', 0, 600) : null,
       s.kind === 'star' || s.kind === 'polygon' ? N('Points', s, 'points', 3, 24) : null,
       s.kind === 'star' ? N('Inner', s, 'inner', 0.05, 1, 0.01) : null,
-      s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null));
-    out.append(section('Fill', T('Fill', s, 'fillOn'), C('Color', s, 'fill'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+      s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null),
+      h('div', { class: 'acts' }, h('button', { class: 'act', 'data-testid': 'to-points', onclick: () => {
+        const n = s.kind === 'ellipse' || s.kind === 'ring' ? 24 : 16;
+        s.pts = shapePoints(s, n).map(p => p.map(v => +v.toFixed(1))); s.kind = 'path'; s.closed = true; S.tab = 'points'; commit();
+      } }, icon('node'), 'Convert to Points')));
   } else if (L.type === 'text') {
     const t = L.text;
     const ta = h('textarea', { class: 'txt', rows: 2, 'data-testid': 'text-content' }, t.content);
@@ -751,11 +913,7 @@ function panelStyle(L) {
       select({ label: 'Font', value: t.font, options: Object.keys(FONTS).map(f => [f, f]), onChange: v => { t.font = v; commit(); } }),
       N('Size', t, 'size', 8, 800), N('Weight', t, 'weight', 100, 900, 100), N('Tracking', t, 'tracking', -0.2, 1, 0.01), N('Line Ht', t, 'lineHeight', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
-      T('Italic', t, 'italic')));
-    out.append(section('Color', C('Fill', t, 'fill')));
-  } else if (L.type === 'solid') {
-    const s = L.solid;
-    out.append(section('Solid', C('Color', s, 'color'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+      toggle({ label: 'Italic', value: t.italic, onChange: v => { t.italic = v; commit(); } })));
   } else if (L.type === 'image' || L.type === 'video') {
     const m = L.media;
     out.append(section('Media', h('div', { class: 'hint' }, `${m.w}×${m.h} source`),
@@ -764,10 +922,12 @@ function panelStyle(L) {
         h('button', { class: 'act', onclick: () => { writeProp(L, 'scale', S.t, +Math.max(P().w / m.w, P().h / m.h).toFixed(3)); commit(); } }, 'Fill')),
       L.type === 'video' ? N('Volume', m, 'volume', 0, 1, 0.01) : null,
       L.type === 'video' ? N('Offset s', m, 'offset', 0, 600, 0.05) : null));
-  } else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no style — add effects in FX; they apply to everything below.'));
+  } else if (L.type === 'audio') {
+    const m = L.media;
+    out.append(section('Audio', h('div', { class: 'hint' }, m.duration ? `Source ${tc(m.duration)}` : ''), N('Volume', m, 'volume', 0, 1, 0.01, 'audio-volume'), N('Offset s', m, 'offset', 0, 600, 0.05)));
+  }
   return out;
 }
-
 function panelBorder(L) {
   const out = h('div', {});
   const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
@@ -810,12 +970,182 @@ function panelFx(L) {
   return out;
 }
 
+
 function panelBlend(L) {
   return h('div', {},
-    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')),
-    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }));
+    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, testid: 'opacity', onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }),
+    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')));
 }
 
+// ---- Edit Points (vector path): trackpad cursor + tap to place, or tap / drag directly on the preview ----
+function updateCursorBoxes() {
+  const c = S.cursor; if (!c) return;
+  const x = $('[data-testid=cursor-x]'), y = $('[data-testid=cursor-y]');
+  if (x && document.activeElement !== x) x.value = c[0].toFixed(1);
+  if (y && document.activeElement !== y) y.value = c[1].toFixed(1);
+}
+function placePoint() {
+  const L = selLayer(); if (!L || L.type !== 'shape' || L.shape.kind !== 'path') return;
+  const c = S.cursor || [P().w / 2, P().h / 2];
+  L.shape.pts.push(toLocal(L, c[0], c[1]).map(v => +v.toFixed(1))); commit();
+}
+function panelPoints(L) {
+  if (!L || L.type !== 'shape' || L.shape.kind !== 'path') return { content: h('div', { class: 'hint' }, 'Select a vector shape.'), left: [] };
+  const c = S.cursor || (S.cursor = [P().w / 2, P().h / 2]);
+  const box = (axis, i) => h('label', { class: 'pt-box' }, h('input', { type: 'number', step: 0.1, value: c[i].toFixed(1), 'data-testid': 'cursor-' + axis, inputmode: 'decimal',
+    onchange: e => { const v = +e.target.value; if (!isNaN(v)) { S.cursor[i] = v; drawOverlay(); } } }), h('em', {}, axis.toUpperCase()));
+  const padEl = h('div', { class: 'trackpad', 'data-testid': 'trackpad' }, h('i', { class: 'cn tl' }), h('i', { class: 'cn tr' }), h('i', { class: 'cn bl' }), h('i', { class: 'cn br' }),
+    h('div', { class: 'pt-xy' }, box('x', 0), box('y', 1)),
+    h('div', { class: 'pt-hint' }, 'Swipe here to position next point; tap here to place it.'),
+    h('div', { class: 'pt-count' }, `${L.shape.pts.length} point${L.shape.pts.length === 1 ? '' : 's'}`));
+  let tp = null;
+  padEl.addEventListener('pointerdown', e => { if (e.target.closest('input')) return; padEl.setPointerCapture(e.pointerId); tp = { x: e.clientX, y: e.clientY, c0: S.cursor.slice(), moved: false }; });
+  padEl.addEventListener('pointermove', e => {
+    if (!tp) return; const dx = e.clientX - tp.x, dy = e.clientY - tp.y;
+    if (Math.hypot(dx, dy) > 4) tp.moved = true;
+    if (tp.moved) { S.cursor = [Math.round((tp.c0[0] + dx / viewScale) * 10) / 10, Math.round((tp.c0[1] + dy / viewScale) * 10) / 10]; drawOverlay(); updateCursorBoxes(); }
+  });
+  padEl.addEventListener('pointerup', () => { if (tp && !tp.moved) placePoint(); tp = null; });
+  padEl.addEventListener('pointercancel', () => { tp = null; });
+  const left = [
+    h('button', { class: 'ib' + (L.shape.closed !== false ? ' on' : ''), title: 'Closed path', 'data-testid': 'pt-close', onclick: () => { L.shape.closed = L.shape.closed === false; commit(); } }, icon('node')),
+    h('button', { class: 'ib dim', title: 'Curves (coming soon)', onclick: soon('Curved points') }, icon('bezier')),
+    h('button', { class: 'ib', title: 'Add point at cursor', onclick: placePoint }, icon('pluscircle')),
+  ];
+  return { content: padEl, left };
+}
+
+// ---- Freehand drawing: size slider, colour bar + swatches, tool column ----
+const SWATCHES = ['#ff4444', '#f5b546', '#fae965', '#1fd91e', '#17e1e1', '#3e4cf5', '#dd44dd', '#ffffff', '#bebebe', '#888888', '#444444', '#000000', '#5eb69d', '#98c99c'];
+function openColorPicker() { const pc = $('#pickColor'); pc.value = S.draw.color; pc.click(); }
+function panelDraw(L) {
+  if (!L || L.type !== 'draw') return { content: h('div', { class: 'hint' }, 'Select a drawing layer.') };
+  const d = S.draw;
+  const range = h('input', { type: 'range', min: 1, max: 100, step: 1, value: d.size, class: 'mint', 'data-testid': 'draw-size' });
+  const num = h('input', { type: 'number', min: 1, max: 100, value: d.size, class: 'dr-num' });
+  const dot = h('i', { class: 'dr-dot' });
+  const setSize = v => { d.size = Math.max(1, Math.min(100, Math.round(v))); range.value = d.size; num.value = d.size; range.style.setProperty('--p', (d.size - 1) / 99 * 100 + '%'); dot.style.setProperty('--s', 6 + d.size / 100 * 12 + 'px'); };
+  range.addEventListener('input', () => setSize(+range.value)); num.addEventListener('change', () => setSize(+num.value)); setSize(d.size);
+  const n = parseInt(d.color.slice(1), 16), lum = ((n >> 16) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11);
+  const content = h('div', { class: 'draw' },
+    h('div', { class: 'dr-size' }, dot, range, num),
+    h('div', { class: 'dr-colors' },
+      h('div', { class: 'dr-left' },
+        h('div', { class: 'dr-hex', 'data-testid': 'draw-color', style: { background: d.color, color: lum > 150 ? '#000' : '#fff' } }, h('span', {}, `${d.color.toUpperCase()} (100%)`),
+          h('button', { class: 'dr-add', title: 'Custom colour', onclick: openColorPicker }, icon('plus'))),
+        h('div', { class: 'dr-sw' }, SWATCHES.map(c => h('button', { class: c === d.color ? 'on' : '', style: { background: c }, title: c, 'data-testid': 'swatch', onclick: () => { d.color = c; renderPanel(); } })))),
+      h('div', { class: 'dr-side' },
+        h('button', { class: 'ib' + (S.picking ? ' on' : ''), title: 'Pick a colour from the preview', onclick: () => { S.picking = !S.picking; if (S.picking) toast('Tap the preview to pick a colour'); renderPanel(); } }, icon('dropper')),
+        h('button', { class: 'ib', title: 'Clear drawing', 'data-testid': 'draw-clear', onclick: () => { if (L.draw.strokes.length && confirm('Clear this drawing?')) { L.draw.strokes = []; commit(); } } }, icon('canvas')),
+        h('button', { class: 'ib', title: 'Colour picker', onclick: openColorPicker }, icon('palette')))));
+  const right = h('div', { class: 'sub-r' }, ['pencil', 'brush', 'smudge', 'eraser'].map(t =>
+    h('button', { class: 'ib' + (d.tool === t ? ' on' : '') + (t === 'smudge' ? ' dim' : ''), title: t[0].toUpperCase() + t.slice(1), 'data-testid': 'tool-' + t,
+      onclick: () => { if (t === 'smudge') return toast('Smudge: coming soon'); d.tool = t; renderPanel(); } }, icon(t))));
+  return { content, right };
+}
+
+function panelProject() {
+  const p = P();
+  const out = h('div', {});
+  out.append(section('Canvas', chips(Object.keys(ASPECTS).map(a => [a, a, 'aspect-' + a]), p.aspect, v => changeAspect(v)),
+    select({ label: 'FPS', value: String(p.fps), options: [['24', '24'], ['25', '25'], ['30', '30'], ['60', '60']], onChange: v => { p.fps = +v; commit(); } }),
+    slider({ label: 'Duration', value: p.duration, min: 1, max: 60, step: 0.5, testid: 'duration', onInput: v => { p.duration = v; }, onChange: v => { p.duration = v; S.t = Math.min(S.t, v); commit(); } }), // clips are not clamped: anything past the end just isn't rendered
+    color({ label: 'Background', value: p.bg, onInput: liveSet(v => (p.bg = v)), onChange: v => { p.bg = v; commit(); } })));
+  out.append(section('Project', h('div', { class: 'acts' },
+    h('button', { class: 'act', onclick: openProjects, 'data-testid': 'open-projects' }, icon('menu'), 'Projects'),
+    h('button', { class: 'act', onclick: () => newProjectFlow(), 'data-testid': 'new-project' }, icon('plus'), 'New'),
+    h('button', { class: 'act', onclick: exportJSON, 'data-testid': 'export-json' }, icon('export'), 'Save JSON'),
+    h('button', { class: 'act', onclick: () => $('#fileJson').click(), 'data-testid': 'import-json' }, icon('up'), 'Load JSON'),
+    h('button', { class: 'act', onclick: exportPNG, 'data-testid': 'export-png' }, icon('image'), 'Frame PNG'))));
+  out.append(h('div', { class: 'hint small' }, 'Autosaves to this device. Media lives in IndexedDB; JSON export embeds it. Add to Home Screen from Safari’s share menu for full-screen use.'));
+  return out;
+}
+
+// ---------------- add sheet (+) ----------------
+const SHEET_TABS = [['shape', 'Shape', 'shapes'], ['media', 'Media', 'media'], ['audio', 'Audio', 'audio'], ['object', 'Object /\nElement', 'object'], ['template', 'Template', 'template']];
+// [kind, testid suffix, shape overrides (radius as a fraction of the size)]
+const SHAPE_GRID = [
+  ['ellipse'], ['rect'], ['cross'], ['ring'], ['triangle'],
+  ['pie'], ['polygon'], ['flower'], ['arrow'], ['trapezoid'],
+  ['rect', 'roundrect', { radius: 0.25 }], ['star'], ['line'], ['heart'], ['half'],
+  ['polygon', 'pentagon', { points: 5 }], ['polygon', 'diamond', { points: 4 }], ['polygon', 'octagon', { points: 8 }], ['star', 'star4', { points: 4, inner: 0.42 }], ['star', 'burst', { points: 12, inner: 0.72 }],
+];
+function shapeIconSvg(kind, o = {}) {
+  const wrap = inner => `<svg viewBox="-12 -12 24 24">${inner}</svg>`;
+  if (kind === 'line') return wrap('<path d="M-8.5 8.5 8.5-8.5" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>');
+  if (kind === 'ring') return wrap('<circle r="8.6" fill="none" stroke="currentColor" stroke-width="2.6"/>');
+  if (kind === 'ellipse') return wrap('<circle r="10" fill="currentColor"/>');
+  if (kind === 'rect') { const r = o.radius != null ? o.radius * 20 : 2.2; return wrap(`<rect x="-9.5" y="-9.5" width="19" height="19" rx="${r}" fill="currentColor"/>`); }
+  const pts = shapePoints({ kind, w: 21, h: 21, points: o.points ?? (kind === 'polygon' ? 6 : 5), inner: o.inner ?? 0.45, thickness: 0.25 }, 40);
+  return wrap(`<path d="M${pts.map(p => p.map(v => v.toFixed(2)).join(' ')).join('L')}Z" fill="currentColor"/>`);
+}
+function addShape(kind, o = {}) {
+  const short = Math.min(P().w, P().h), ov = { ...o };
+  if (ov.radius != null) ov.radius *= short * 0.4;
+  addLayer(makeLayer(P(), 'shape', { kind, shape: ov }));
+}
+function addDrawing() { addLayer(makeLayer(P(), 'draw'), { tab: 'draw' }); }
+function addVector() { S.cursor = [P().w / 2, P().h / 2]; addLayer(makeLayer(P(), 'shape', { kind: 'path' }), { tab: 'points' }); }
+const mediaSources = type => { const seen = new Set(); return P().layers.filter(L => (type === 'audio' ? L.type === 'audio' : L.type === 'image' || L.type === 'video') && L.media && !seen.has(L.media.id) && seen.add(L.media.id)); };
+function sheetContent() {
+  const tile = (ic, label, fn, tid, extra = '') => h('button', { class: 'sh-item ' + extra, 'data-testid': tid, onclick: fn }, icon(ic), h('span', {}, label));
+  switch (S.addTab) {
+    case 'media': return h('div', { class: 'sh-media' },
+      h('div', { class: 'sh-mleft' }, h('button', { class: 'sh-mbtn', title: 'Browse photos & videos', 'data-testid': 'add-media', onclick: () => $('#fileMedia').click() }, icon('grid')),
+        h('button', { class: 'sh-mbtn txt', onclick: () => $('#fileMedia').click() }, 'Recents')),
+      h('div', { class: 'sh-mgrid' }, ...mediaSources('media').map(L => h('button', { class: 'sh-thumb', title: L.name, onclick: () => addLayer(makeLayer(P(), L.type, { mediaId: L.media.id, w: L.media.w, h: L.media.h, name: L.name })) },
+        h('img', { src: layerThumb(L) || '', alt: '' }), L.type === 'video' ? h('em', {}, tc(L.end - L.start)) : null)),
+        h('button', { class: 'sh-thumb add', onclick: () => $('#fileMedia').click() }, icon('plus'), h('span', {}, 'Import'))));
+    case 'audio': return h('div', { class: 'sh-audio' },
+      h('button', { class: 'sh-viewall', 'data-testid': 'add-audio', onclick: () => $('#fileAudio').click() }, icon('grid'), h('span', {}, 'Import Audio')),
+      ...mediaSources('audio').map(L => h('button', { class: 'sh-acard', onclick: () => addLayer(makeLayer(P(), 'audio', { mediaId: L.media.id, name: L.name, mediaDuration: L.media.duration })) },
+        h('b', {}, L.name), h('em', {}, tc(L.media.duration || L.end - L.start)), icon('plus'))),
+      mediaSources('audio').length ? null : h('div', { class: 'sh-note' }, 'Add your own music or sound effects (MP3, M4A, WAV). They play with the timeline and are mixed into the export.'));
+    case 'object': return h('div', { class: 'sh-obj' },
+      tile('solid', 'Solid Color', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
+      tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); L.effects.push(makeEffect('coloradj')); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
+      tile('camera', 'Camera', soon('Camera'), 'add-camera'),
+      tile('group', 'Empty Group', soon('Groups'), 'add-group'),
+      tile('nullobj', 'Null', soon('Null objects'), 'add-null'),
+      tile('element', 'Element / Project', soon('Elements'), 'add-element'));
+    case 'template': return h('div', { class: 'sh-tpl' },
+      tile('grid', 'View All', soon('Templates'), 'tpl-all'),
+      tile('demo', 'KINETIC Neon Demo', () => { if (confirm('Replace this project with the KINETIC demo?')) setProject(demoProject(P().aspect)); }, 'add-demo'));
+    default: {
+      const pages = [];
+      for (let i = 0; i < SHAPE_GRID.length; i += 15) pages.push(h('div', { class: 'sh-page' }, SHAPE_GRID.slice(i, i + 15).map(([k, id, o]) =>
+        h('button', { class: 'sh-shape', title: id || k, 'data-testid': 'add-' + (id || k), html: shapeIconSvg(k, o), onclick: () => addShape(k, o) }))));
+      const dots = h('div', { class: 'sh-dots' }, pages.map((_, i) => h('i', { class: i ? '' : 'on' })));
+      const wrap = h('div', { class: 'sh-pages' }, pages);
+      wrap.addEventListener('scroll', () => { const i = Math.round(wrap.scrollLeft / (wrap.clientWidth || 1)); [...dots.children].forEach((d, j) => d.classList.toggle('on', j === i)); }, { passive: true });
+      return h('div', { class: 'sh-shapes' }, wrap, dots);
+    }
+  }
+}
+function renderSheet() {
+  const side = (ic, label, fn, tid) => h('button', { class: 'sh-sbtn', 'data-testid': tid, title: label || 'Close', onclick: fn }, icon(ic), label ? h('span', {}, label) : null);
+  $('#sheet').replaceChildren(
+    h('div', { class: 'sh-tabs' }, SHEET_TABS.map(([id, label, ic]) => h('button', { class: 'sh-tab' + (S.addTab === id ? ' on' : ''), 'data-testid': 'sheet-' + id, onclick: () => { S.addTab = id; renderSheet(); } }, icon(ic), h('span', {}, label)))),
+    h('div', { class: 'sh-body' }, sheetContent()),
+    h('div', { class: 'sh-side' },
+      side('freehand', 'Freehand\nDrawing', addDrawing, 'add-draw'),
+      side('vector', 'Vector\nDrawing', addVector, 'add-vector'),
+      side('textaa', 'Text', () => addLayer(makeLayer(P(), 'text')), 'add-text'),
+      side('close', '', () => { S.tab = null; refreshAll(); }, 'sheet-close')));
+}
+function openSheet(tabId) { if (S.sel) { S.sel = null; S.selKeys.clear(); } S.tab = 'add'; if (tabId) S.addTab = tabId; refreshAll(); }
+
+function openLayerMenu() {
+  const L = selLayer(); if (!L) return;
+  const it = (ic, label, fn) => h('button', { class: 'act wide', onclick: () => { dlg.close(); fn(); } }, icon(ic), label);
+  openDialog(L.name || 'Layer', h('div', { class: 'plist' },
+    it('center', 'Center on canvas', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
+    it(L.visible ? 'eyeoff' : 'eye', L.visible ? 'Hide layer' : 'Show layer', () => { L.visible = !L.visible; commit(); }),
+    it(L.locked ? 'unlock' : 'lock', L.locked ? 'Unlock' : 'Lock', () => { L.locked = !L.locked; commit(); }),
+    it('up', 'Move up', () => moveLayer(L, -1)), it('down', 'Move down', () => moveLayer(L, 1)),
+    it('ease', 'Easing', () => openSub('ease')),
+    it('text', 'Rename', () => { const n = $('#layerName'); n.focus(); n.select(); })));
+}
 function selectedKeyObjs() {
   const out = [];
   for (const L of P().layers) for (const { prop, k } of allKeys(L)) if (S.selKeys.has(k.id)) out.push({ L, prop, k });
@@ -850,18 +1180,18 @@ function bezierEditor(ease, onCommit) {
   const fromPx = (px, py) => [Math.max(0, Math.min(1, (px - pad) / inner)), Math.max(YMIN, Math.min(YMAX, YMAX - (py - vpad) / vin * (YMAX - YMIN)))];
   const draw = () => {
     ctx.clearRect(0, 0, size, size);
-    ctx.strokeStyle = 'rgba(0,240,255,.12)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1;
     const [, y0] = toPx(0, 0), [, y1] = toPx(0, 1);
     for (let i = 0; i <= 4; i++) { const [x] = toPx(i / 4, 0); const [, y] = toPx(0, i / 4); ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, y0); ctx.stroke(); ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(size - pad, y); ctx.stroke(); }
     const e = isBez ? { type: 'bezier', bz } : ease;
-    ctx.beginPath(); ctx.strokeStyle = '#c6ff00'; ctx.lineWidth = 2; ctx.shadowColor = '#c6ff00'; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.strokeStyle = '#00ffa8'; ctx.lineWidth = 2; ctx.shadowBlur = 0;
     for (let i = 0; i <= 100; i++) { const [x, y] = toPx(i / 100, applyEase(e, i / 100)); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
     ctx.stroke(); ctx.shadowBlur = 0;
     if (isBez) {
       const [a, b] = [toPx(bz[0], bz[1]), toPx(bz[2], bz[3])];
-      ctx.strokeStyle = '#ff2bd6'; ctx.lineWidth = 1;
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(...toPx(0, 0)); ctx.lineTo(...a); ctx.moveTo(...toPx(1, 1)); ctx.lineTo(...b); ctx.stroke();
-      for (const p of [a, b]) { ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#05060a'; ctx.fill(); ctx.strokeStyle = '#ff2bd6'; ctx.lineWidth = 2; ctx.stroke(); }
+      for (const p of [a, b]) { ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#141720'; ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
     }
     ctx.fillStyle = 'rgba(234,252,255,.5)'; ctx.font = '9px ui-monospace,monospace';
     ctx.fillText(isBez ? `cubic-bezier(${bz.map(v => v.toFixed(2)).join(', ')})` : ease.type, 6, 12);
@@ -885,23 +1215,6 @@ function bezierEditor(ease, onCommit) {
   return h('div', { class: 'bezwrap' }, cv);
 }
 
-function panelProject() {
-  const p = P();
-  const out = h('div', {});
-  out.append(section('Canvas', chips(Object.keys(ASPECTS).map(a => [a, a, 'aspect-' + a]), p.aspect, v => changeAspect(v)),
-    select({ label: 'FPS', value: String(p.fps), options: [['24', '24'], ['25', '25'], ['30', '30'], ['60', '60']], onChange: v => { p.fps = +v; commit(); } }),
-    slider({ label: 'Duration', value: p.duration, min: 1, max: 60, step: 0.5, testid: 'duration', onInput: v => { p.duration = v; }, onChange: v => { p.duration = v; S.t = Math.min(S.t, v); commit(); } }), // clips are not clamped: anything past the end just isn't rendered
-    color({ label: 'Background', value: p.bg, onInput: liveSet(v => (p.bg = v)), onChange: v => { p.bg = v; commit(); } })));
-  out.append(section('Project', h('div', { class: 'acts' },
-    h('button', { class: 'act', onclick: openProjects, 'data-testid': 'open-projects' }, icon('menu'), 'Projects'),
-    h('button', { class: 'act', onclick: () => newProjectFlow(), 'data-testid': 'new-project' }, icon('plus'), 'New'),
-    h('button', { class: 'act', onclick: exportJSON, 'data-testid': 'export-json' }, icon('export'), 'Save JSON'),
-    h('button', { class: 'act', onclick: () => $('#fileJson').click(), 'data-testid': 'import-json' }, icon('up'), 'Load JSON'),
-    h('button', { class: 'act', onclick: exportPNG, 'data-testid': 'export-png' }, icon('media'), 'Frame PNG'))));
-  out.append(h('div', { class: 'hint small' }, 'Autosaves to this device. Media lives in IndexedDB; JSON export embeds it. Add to Home Screen from Safari’s share menu for full-screen use.'));
-  return out;
-}
-
 function changeAspect(a) {
   const p = P(); const [w, hh] = ASPECTS[a]; const sx = w / p.w, sy = hh / p.h;
   for (const L of p.layers) {
@@ -910,6 +1223,7 @@ function changeAspect(a) {
   }
   p.w = w; p.h = hh; p.aspect = a; commit();
 }
+
 
 // ---------------- home (project list) ----------------
 function thumbFor(p) {
@@ -928,7 +1242,7 @@ function showHome() {
     return h('div', { class: 'pcard', 'data-testid': 'home-project' },
       h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, h('span', { class: 'pc-th' }, pr ? thumbFor(pr) : ''),
         h('span', { class: 'pc-tx' }, h('b', {}, x.name), h('em', {}, `${x.aspect} · ${pr ? pr.duration.toFixed(1) + 's' : ''} · ${new Date(x.modified).toLocaleDateString()}`))),
-      h('button', { class: 'ib', title: 'Delete', onclick: () => { if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); if (P() && x.id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', 'Project 1')); } showHome(); } } }, icon('more')));
+      h('button', { class: 'ib', title: 'Delete', onclick: () => { if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); if (P() && x.id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', 'Project 1')); } showHome(); } } }, icon('dots')));
   }) : [h('div', { class: 'h-empty' }, 'No projects yet. Tap + to create one.')]));
   $('#home').hidden = false; document.body.classList.add('home-open');
 }
@@ -942,7 +1256,7 @@ function openHomeSettings() {
 // ---------------- dialogs ----------------
 const dlg = $('#dlg');
 function openDialog(title, body) {
-  dlg.replaceChildren(h('div', { class: 'dlg-h' }, h('b', {}, title), h('button', { class: 'mini', onclick: () => dlg.close(), 'data-testid': 'dlg-close' }, '✕')), body);
+  dlg.replaceChildren(h('div', { class: 'dlg-h' }, h('b', {}, title), h('button', { class: 'mini', onclick: () => dlg.close(), 'data-testid': 'dlg-close' }, icon('close'))), body);
   if (!dlg.open) dlg.showModal();
 }
 function openProjects() {
@@ -958,7 +1272,7 @@ function newProjectFlow() {
   openDialog('New Project', h('div', { class: 'plist' },
     h('div', { class: 'hint' }, 'Pick an aspect ratio'),
     h('div', { class: 'grid' }, Object.entries(ASPECTS).map(([a, [w, hh]]) =>
-      h('button', { class: 'add-btn aspect', 'data-testid': 'new-' + a, onclick: () => { const p = newProject(a, 'Project ' + (store.listProjects().length + 1)); setProject(p); dlg.close(); hideHome(); S.tab = 'add'; renderTabs(); renderPanel(); } },
+      h('button', { class: 'add-btn aspect', 'data-testid': 'new-' + a, onclick: () => { const p = newProject(a, 'Project ' + (store.listProjects().length + 1)); setProject(p); dlg.close(); hideHome(); } },
         h('i', { style: { aspectRatio: `${w}/${hh}` } }), h('span', {}, a))))));
 }
 async function exportJSON() {
@@ -1025,28 +1339,37 @@ function openExport() {
   dlg.querySelectorAll('.chips .chip').forEach(b => b.addEventListener('click', () => { dlg.querySelectorAll('.chips .chip').forEach(x => x.classList.remove('on')); b.classList.add('on'); }));
 }
 
+
 // ---------------- wiring ----------------
 function buildChrome() {
-  $('#btnProjects').replaceChildren(icon('back')); $('#btnSettings').replaceChildren(icon('gear')); $('#panelClose').replaceChildren(icon('check')); $('#btnUndo').replaceChildren(icon('undo')); $('#btnRedo').replaceChildren(icon('redo'));
-  $('#btnExport').replaceChildren(icon('share'));
-  $('#btnSettings').onclick = () => pickTab('project');
-  $('#panelClose').onclick = () => { S.tab = isMobile() ? null : 'add'; renderTabs(); renderPanel(); requestAnimationFrame(() => { layoutStage(); drawFrame(); }); };
-  $('#homeSettings').replaceChildren(icon('gear')); $('#homeNew').replaceChildren(icon('plus'));
-  $('#homeNew').onclick = () => newProjectFlow(); $('#homeSettings').onclick = openHomeSettings;
-  $('#btnStart').replaceChildren(icon('start')); $('#btnLoop').replaceChildren(icon('loop'));
-  $('#btnKey').prepend(icon('key')); $('#zoomIn').replaceChildren(icon('zin')); $('#zoomOut').replaceChildren(icon('zout'));
-  $('#btnProjects').onclick = showHome;
-  $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
+  const ic = (id, n) => $(id).replaceChildren(icon(n));
+  ic('#btnBack', 'back'); ic('#btnSettings', 'gear'); ic('#btnExport', 'share'); ic('#btnDup', 'dup'); ic('#btnDel', 'trash'); ic('#btnMore', 'more');
+  ic('#btnKey', 'key'); ic('#btnPtAdd', 'pluscircle');
+  ic('#btnUndo', 'undo'); ic('#btnRedo', 'redo'); ic('#btnStart', 'start'); ic('#btnEnd', 'end'); ic('#btnCopy', 'copy'); ic('#btnFit', 'fit');
+  ic('#fab', 'plus'); ic('#homeSettings', 'gear'); ic('#homeNew', 'plus');
+  $('#btnBack').onclick = goBack;
+  $('#btnSettings').onclick = () => openSub('project');
   $('#btnExport').onclick = openExport;
+  $('#btnDup').onclick = () => duplicateLayer(selLayer());
+  $('#btnDel').onclick = () => deleteLayer(selLayer());
+  $('#btnMore').onclick = openLayerMenu;
+  $('#btnKey').onclick = toggleKeyAll;
+  $('#btnPtAdd').onclick = placePoint;
+  $('#fab').onclick = () => openSheet();
+  $('#homeNew').onclick = () => newProjectFlow(); $('#homeSettings').onclick = openHomeSettings;
+  $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
   $('#btnPlay').onclick = () => togglePlay();
   $('#btnStart').onclick = () => seek(0);
-  $('#btnLoop').onclick = () => { S.loop = !S.loop; updateTransport(); };
-  $('#btnKey').onclick = toggleKeyAll;
-  $('#zoomIn').onclick = () => { S.autoFit = false; S.pps = Math.min(ZMAX, S.pps * 1.4); renderTimeline(); };
-  $('#zoomOut').onclick = () => { S.autoFit = false; S.pps = Math.max(12, S.pps / 1.4); renderTimeline(); };
+  $('#btnEnd').onclick = () => seek(P().duration);
+  $('#btnCopy').onclick = () => duplicateLayer(selLayer());
+  $('#btnFit').onclick = () => { S.full = !S.full; refreshAll(); };
   $('#projName').onchange = e => { P().name = e.target.value || 'Untitled'; commit(); };
+  $('#layerName').onchange = e => { const L = selLayer(); if (L) { L.name = e.target.value || L.name; commit(); } };
+  for (const id of ['#projName', '#layerName']) $(id).addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
   $('#fileMedia').onchange = e => { const f = e.target.files[0]; if (f) importMediaFile(f); e.target.value = ''; };
+  $('#fileAudio').onchange = e => { const f = e.target.files[0]; if (f) importAudioFile(f); e.target.value = ''; };
   $('#fileJson').onchange = e => { const f = e.target.files[0]; if (f) importJSON(f); e.target.value = ''; };
+  $('#pickColor').addEventListener('input', e => { S.draw.color = e.target.value; renderPanel(); });
   window.addEventListener('resize', () => { layoutStage(); drawFrame(); renderTimeline(); });
   new ResizeObserver(() => { layoutStage(); drawFrame(); }).observe($('#stageWrap'));
   window.addEventListener('keydown', e => {
@@ -1054,27 +1377,29 @@ function buildChrome() {
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (e.key === 'k') toggleKeyAll();
+    else if (e.key === 'Escape') goBack();
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
-      else if (selLayer()) { P().layers.splice(P().layers.indexOf(selLayer()), 1); S.sel = null; commit(); }
+      else if (selLayer()) deleteLayer(selLayer());
     } else if (e.key === 'ArrowLeft') seek(S.t - 1 / P().fps);
     else if (e.key === 'ArrowRight') seek(S.t + 1 / P().fps);
   });
 }
-function undo() { const s = history.undo(); if (s) { S.project = s; hydrateMedia(s); scheduleSave(); refreshAll(); } }
-function redo() { const s = history.redo(); if (s) { S.project = s; hydrateMedia(s); scheduleSave(); refreshAll(); } }
+function afterHistory(s) { S.project = s; if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
+function undo() { const s = history.undo(); if (s) afterHistory(s); }
+function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
   buildChrome(); lockPage(); bindTimelineGestures();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
   if (!p) p = demoProject('9:16');
-  renderTabs();
   setProject(p);
   if (!/[?&#]editor/.test(location.href)) showHome();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
-  window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect };
+  window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect,
+    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer };
 }
 boot();

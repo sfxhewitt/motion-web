@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#121212">
+<meta name="theme-color" content="#191b27">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <!-- "default" (not black-translucent): on iOS 26 standalone, black-translucent sizes the layout viewport as screen minus
@@ -17,34 +17,39 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="css/app.css">
 </head>
-<body>
+<body data-mode="none">
 <div id="app">
   <header id="top">
-    <button id="btnProjects" class="ib" title="Projects" data-testid="btn-projects"></button>
-    <input id="projName" class="pname" aria-label="Project name" spellcheck="false">
+    <button id="btnBack" class="ib" title="Back" data-testid="btn-back"></button>
+    <input id="projName" class="pname m-none" aria-label="Project name" spellcheck="false" data-testid="proj-name">
+    <input id="layerName" class="pname lname m-sel" aria-label="Layer name" spellcheck="false" data-testid="layer-name">
+    <b id="topTitle" class="m-sub" data-testid="top-title"></b>
     <div class="sp"></div>
-    <button id="btnUndo" class="ib" title="Undo" data-testid="undo"></button>
-    <button id="btnRedo" class="ib" title="Redo" data-testid="redo"></button>
-    <button id="btnSettings" class="ib" title="Project settings" data-testid="tab-project" data-tab="project"></button>
-    <button id="btnExport" class="ib exp" title="Export" aria-label="Export" data-testid="btn-export"></button>
+    <button id="btnSettings" class="ib m-none" title="Project settings" data-testid="tab-project"></button>
+    <button id="btnExport" class="exp m-none" title="Export" aria-label="Export" data-testid="btn-export"></button>
+    <button id="btnDup" class="ib m-sel" title="Duplicate layer" data-testid="dup-layer"></button>
+    <button id="btnDel" class="ib m-sel" title="Delete layer" data-testid="del-layer"></button>
+    <button id="btnMore" class="ib m-sel" title="More" data-testid="layer-more"></button>
+    <div id="topSub" class="m-sub"><button id="btnKey" class="ib keyb" title="Keyframe (K)" data-testid="key-all"></button><button id="btnPtAdd" class="ib ptadd" title="Add point" data-testid="pt-add"></button></div>
   </header>
   <main id="stageWrap">
     <div id="stage"><canvas id="view" data-testid="view"></canvas><canvas id="overlay"></canvas></div>
-    <div id="hud"></div>
   </main>
   <section id="transport">
-    <button id="btnStart" class="ib" title="Go to start"></button>
+    <button id="btnUndo" class="ib" title="Undo" data-testid="undo"></button>
+    <button id="btnRedo" class="ib" title="Redo" data-testid="redo"></button>
+    <button id="btnStart" class="ib" title="Go to start" data-testid="go-start"></button>
     <button id="btnPlay" class="ib play" title="Play / Pause (space)" data-testid="play"></button>
-    <div class="tcbox"><span id="tc">00:00.00</span><span class="sl">/</span><span id="dur">00:06.00</span><span id="frame">F000</span></div>
-    <div class="sp"></div>
-    <button id="btnKey" class="keybtn" title="Keyframe all transform props (K)" data-testid="key-all">KEY</button>
-    <button id="btnLoop" class="ib on" title="Loop"></button>
-    <button id="zoomOut" class="ib" title="Zoom timeline out"></button>
-    <button id="zoomIn" class="ib" title="Zoom timeline in"></button>
+    <button id="btnEnd" class="ib" title="Go to end" data-testid="go-end"></button>
+    <button id="btnCopy" class="ib" title="Duplicate layer" data-testid="copy-layer"></button>
+    <button id="btnFit" class="ib" title="Full-screen preview" data-testid="fit"></button>
   </section>
-  <section id="timeline"><div id="tlScroll" data-testid="timeline"></div></section>
-  <aside id="panel"><div id="panelHead"><b id="panelTitle"></b><button id="panelClose" class="ib" title="Done" data-testid="panel-close"></button></div><div id="panelBody" data-testid="panel"></div></aside>
-  <nav id="tabs"></nav>
+  <section id="bottom">
+    <section id="timeline"><div id="tlScroll" data-testid="timeline"></div><div id="playhead"></div><div id="tcPill" data-testid="timecode">00:00:00</div></section>
+    <aside id="panel" data-testid="panel"></aside>
+    <button id="fab" class="fab" title="Add" aria-label="Add layer" data-testid="tab-add"></button>
+    <div id="sheet" data-testid="add-sheet" hidden></div>
+  </section>
 </div>
 <section id="home" data-testid="home" hidden>
   <header class="h-top"><b class="wordmark">KINETIC</b><div class="sp"></div><button id="homeSettings" class="ib" title="Settings" data-testid="home-settings"></button></header>
@@ -54,7 +59,9 @@
 </section>
 <dialog id="dlg"></dialog>
 <input type="file" id="fileMedia" accept="image/*,video/*" hidden data-testid="file-media">
+<input type="file" id="fileAudio" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg" hidden data-testid="file-audio">
 <input type="file" id="fileJson" accept=".json,application/json" hidden data-testid="file-json">
+<input type="color" id="pickColor" hidden>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

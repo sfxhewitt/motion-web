@@ -36,6 +36,33 @@ function gradient(ctx, w, h, c1, c2, angle) {
   g.addColorStop(0, c1); g.addColorStop(1, c2); return g;
 }
 
+// Polygon outline (local coords, centred) for every shape kind; curves are sampled. Used for drawing the polygonal
+// kinds and for "Convert to points" (Edit Points).
+export function shapePoints(s, n = 48) {
+  const w = s.w, h = s.h, rx = w / 2, ry = h / 2, out = [];
+  const polar = (fn, m = n, a0 = 0, a1 = Math.PI * 2, close = false) => { for (let i = 0; i < m + (close ? 1 : 0); i++) { const a = a0 + (a1 - a0) * i / m; const r = fn(a); out.push([Math.cos(a) * rx * r, Math.sin(a) * ry * r]); } };
+  switch (s.kind) {
+    case 'ellipse': case 'ring': polar(() => 1); break;
+    case 'triangle': out.push([0, -ry], [rx, ry], [-rx, ry]); break;
+    case 'star': case 'polygon': {
+      const k = Math.max(3, Math.round(s.points)), star = s.kind === 'star', steps = star ? k * 2 : k;
+      for (let i = 0; i < steps; i++) { const a = -Math.PI / 2 + i * Math.PI * 2 / steps, rr = star && i % 2 ? s.inner : 1; out.push([Math.cos(a) * rx * rr, Math.sin(a) * ry * rr]); }
+      break;
+    }
+    case 'cross': { const tx = rx / 3, ty = ry / 3; out.push([-tx, -ry], [tx, -ry], [tx, -ty], [rx, -ty], [rx, ty], [tx, ty], [tx, ry], [-tx, ry], [-tx, ty], [-rx, ty], [-rx, -ty], [-tx, -ty]); break; }
+    case 'arrow': out.push([-rx, -ry * 0.28], [rx * 0.15, -ry * 0.28], [rx * 0.15, -ry * 0.75], [rx, 0], [rx * 0.15, ry * 0.75], [rx * 0.15, ry * 0.28], [-rx, ry * 0.28]); break;
+    case 'trapezoid': out.push([-rx * 0.55, -ry], [rx * 0.55, -ry], [rx, ry], [-rx, ry]); break;
+    case 'pie': out.push([0, 0]); polar(() => 1, n, 0, Math.PI * 1.5, true); break;
+    case 'half': polar(() => 1, n, Math.PI, Math.PI * 2, true); for (const p of out) p[1] += ry / 2; break;
+    case 'flower': polar(a => 0.62 + 0.38 * Math.abs(Math.cos(2.5 * (a + Math.PI / 2))), n * 2); break;
+    case 'heart': for (let i = 0; i < n * 2; i++) { const t = i / (n * 2) * Math.PI * 2; const x = 16 * Math.sin(t) ** 3, y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)); out.push([x / 17 * rx, (y + 2.5) / 15 * ry]); } break;
+    case 'path': for (const p of s.pts || []) out.push([p[0], p[1]]); break;
+    case 'line': out.push([-rx, -ry], [rx, -ry], [rx, ry], [-rx, ry]); break;
+    default: out.push([-rx, -ry], [rx, -ry], [rx, ry], [-rx, ry]);
+  }
+  return out;
+}
+
 function shapePath(ctx, s) {
   const w = s.w, h = s.h;
   ctx.beginPath();
@@ -43,21 +70,39 @@ function shapePath(ctx, s) {
     case 'ellipse': ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2); break;
     case 'ring': ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
       ctx.ellipse(0, 0, w / 2 * (1 - s.thickness), h / 2 * (1 - s.thickness), 0, Math.PI * 2, 0, true); break;
-    case 'triangle': ctx.moveTo(0, -h / 2); ctx.lineTo(w / 2, h / 2); ctx.lineTo(-w / 2, h / 2); ctx.closePath(); break;
-    case 'star': case 'polygon': {
-      const n = Math.max(3, Math.round(s.points)), star = s.kind === 'star', steps = star ? n * 2 : n;
-      for (let i = 0; i < steps; i++) {
-        const a = -Math.PI / 2 + i * Math.PI * 2 / steps, rr = star && i % 2 ? s.inner : 1;
-        const x = Math.cos(a) * w / 2 * rr, y = Math.sin(a) * h / 2 * rr;
-        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      }
-      ctx.closePath(); break;
-    }
-    case 'line': ctx.rect(-w / 2, -h / 2, w, h); break;
-    default: {
+    case 'rect': case undefined: {
       const r = Math.min(s.radius || 0, w / 2, h / 2);
       if (ctx.roundRect && r > 0) ctx.roundRect(-w / 2, -h / 2, w, h, r); else ctx.rect(-w / 2, -h / 2, w, h);
+      break;
     }
+    default: {
+      const pts = shapePoints(s);
+      pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      if (s.kind !== 'path' || s.closed !== false) ctx.closePath();
+    }
+  }
+}
+
+// Freehand drawing strokes (local coords). Eraser strokes cut through the layer only (drawn on the layer canvas).
+export const brushWidth = (st, project) => st.size * project.w / 540;
+function drawStrokes(ctx, L, project) {
+  for (const st of L.draw.strokes) {
+    if (!st.pts.length) continue;
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const lw = brushWidth(st, project);
+    ctx.globalCompositeOperation = st.tool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = ctx.fillStyle = st.tool === 'eraser' ? '#000' : st.color;
+    if (st.tool === 'brush') { ctx.globalAlpha *= 0.85; ctx.shadowColor = st.color; ctx.shadowBlur = lw * 0.6 * (ctx.getTransform().a || 1); }
+    ctx.lineWidth = st.tool === 'brush' ? lw * 0.7 : lw;
+    ctx.beginPath();
+    if (st.pts.length === 1) { ctx.arc(st.pts[0][0], st.pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); }
+    else {
+      ctx.moveTo(st.pts[0][0], st.pts[0][1]);
+      for (let i = 1; i < st.pts.length - 1; i++) { const a = st.pts[i], b = st.pts[i + 1]; ctx.quadraticCurveTo(a[0], a[1], (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); }
+      const z = st.pts[st.pts.length - 1]; ctx.lineTo(z[0], z[1]); ctx.stroke();
+    }
+    ctx.restore();
   }
 }
 
@@ -74,7 +119,12 @@ export function textLayout(ctx, tx) {
 // Local-space bounds (w,h centered at origin) for hit-testing / overlay
 export function layerBounds(L, project, ctx) {
   switch (L.type) {
-    case 'shape': return { w: L.shape.w, h: L.shape.h };
+    case 'shape': {
+      if (L.shape.kind !== 'path') return { w: L.shape.w, h: L.shape.h };
+      let mx = 1, my = 1; for (const p of L.shape.pts || []) { mx = Math.max(mx, Math.abs(p[0])); my = Math.max(my, Math.abs(p[1])); }
+      return { w: mx * 2, h: my * 2 };
+    }
+    case 'audio': return { w: 0, h: 0 };
     case 'text': { const m = textLayout(ctx, L.text); return { w: m.w, h: m.h }; }
     case 'image': case 'video': return { w: L.media.w, h: L.media.h };
     default: return { w: project.w, h: project.h };
@@ -106,6 +156,7 @@ function drawContent(ctx, L, project) {
       if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
       break;
     }
+    case 'draw': drawStrokes(ctx, L, project); break;
     case 'image': case 'video': {
       const m = media.get(L.media.id);
       if (m && m.el && (m.type === 'image' ? m.el.complete : m.el.readyState >= 2)) ctx.drawImage(m.el, -L.media.w / 2, -L.media.h / 2, L.media.w, L.media.h);
@@ -128,7 +179,7 @@ export class Renderer {
     const lctx = lc.getContext('2d');
     for (let i = project.layers.length - 1; i >= 0; i--) {
       const L = project.layers[i];
-      if (!L.visible || t < L.start || t >= L.end) continue;
+      if (!L.visible || t < L.start || t >= L.end || L.type === 'audio') continue;
       const tr = evalTransform(L, t);
       if (tr.opacity <= 0 && L.type !== 'adjust') continue;
       const op = OPS[L.blend] || 'source-over';
@@ -150,7 +201,7 @@ export class Renderer {
           if (L.shadow?.on && L.type !== 'adjust') { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
           drawContent(c, L, project);
         };
-        if (!shaderFx && op === 'source-over' && L.type !== 'text' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
+        if (!shaderFx && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
           ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore();
         } else {
           lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, W, H);
@@ -168,7 +219,7 @@ export class Renderer {
 // Keep <video> elements in step with the timeline.
 export function syncVideos(project, t, playing) {
   for (const L of project.layers) {
-    if (L.type !== 'video') continue;
+    if (L.type !== 'video' && L.type !== 'audio') continue;
     const m = media.get(L.media.id); if (!m || !m.el) continue;
     const v = m.el, active = L.visible && t >= L.start && t < L.end;
     const local = Math.max(0, t - L.start + (L.media.offset || 0));

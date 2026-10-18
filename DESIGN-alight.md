@@ -1,60 +1,69 @@
-# KINETIC — "Alight-style" reskin: layout map
+# KINETIC — "Alight-style" layout map (v6, matched to real iPhone screenshots)
 
-Goal: Josh is used to the Alight Motion phone app, so KINETIC copies its *look and layout* (dark grey UI,
-where things sit, generic menu names) — **not** its name, logo, bitmaps or icon files. Every icon here is an
-original SVG line icon drawn for KINETIC; the app name stays KINETIC.
+Goal: Josh is used to the Alight Motion phone app, so KINETIC copies its *look, layout and behaviour* (dark
+navy UI, where things sit, generic menu names) — **not** its name, logo, watermark, bitmaps, icon files or its
+music/template content. Every icon is an original SVG line icon drawn for KINETIC in the same line style; the
+app name stays KINETIC.
 
-## Sources (public)
-- alightmotion.com feature list: layers of graphics/video/audio, vector shapes, keyframes for all settings,
-  easing presets + custom curves, "Solid color, gradient, and media fill", "Stroke, Shadow, and Multi-Border".
-- App Store listing (apps.apple.com/gb/app/alight-motion/id1438955848) — page returned 404 to our fetcher, so
-  screenshots were not inspected directly; layout below is from tutorials/guides + general familiarity.
-- Tutorial / guide write-ups (e.g. themotionalight.com interface tour, skkarthicreation.com 3.1.4 walkthrough,
-  community docs kuchingneko28.github.io/alight-motion-docs): large **+** on the home screen opens the new
-  project dialog (ratio, resolution, frame rate, background, name); in the editor the **+** at the bottom right
-  adds Shapes, Image & Video, Audio, Elements, Freehand Drawing, Vector Drawing, Text; a selected layer offers
-  **Move & Transform, Color & Fill, Border & Shadow, Blending & Opacity, Effects** (+ Edit Text for text);
-  blending groups Normal / Darken / Lighten / Contrast / Difference / Color / Mask; settings (fps, background)
-  under the top-right gear in the editor.
+## Sources
+- Nine real iPhone screenshots (440x956 pt, 1500x3260 px) supplied by the user — kept locally in `reference/`
+  (git-ignored, not redistributed): editor, add sheet (Shape / Media / Audio / Object / Template), layer
+  selected, Edit Points, Drawing. Colours below were **sampled with PIL** from those images.
+- `python3 tests/shots.py` renders ours at the same size and writes side-by-side comparisons
+  (reference left, KINETIC right) to `/workspace/kntc-shots/compare/` when `reference/` exists.
 
-## Visual style
-| Token | Value | Notes |
+## Palette (sampled)
+| Token | Value | Where |
 |---|---|---|
-| background | `#121212` | near-black app background |
-| panel / sheet | `#1e1e1e`, raised `#2a2a2a`, pressed `#333` | flat grey panels, no gradients/glow |
-| hairline | `#2f2f2f` | 1px separators |
-| text | `#ffffff` / secondary `#a8a8a8` / tertiary `#6e6e6e` | |
-| accent | `#3d8bff` (blue) | selection, playhead head, active toggles, + button. Approximate — chosen by eye, not sampled |
-| keyframe | `#ffcc33` diamonds | |
-| END / past-end | dimmed + orange line (kept from 6f4ce3f) | |
-| font | system sans (SF on iPhone), titles 16/600, labels 13/500, values 12/400, captions 11/400 | no monospace/uppercase-tracking |
-| radius | sheets 14px top corners, cards 10px, buttons 8px, clips 6px, FAB round | |
-| spacing | 8px grid; 44px touch targets; toolbar items 64px wide | |
-| icons | 24 viewBox, 1.8px round-cap line strokes, no fills | original drawings |
+| `--bg` | `#191b27` | top bar, transport, timeline |
+| `--stage` | `#141720` | preview surround |
+| `--panel` | `#202332` | bottom panel (layer selected / sub panels) |
+| `--tile` | `#282d40` | tiles, layer pills, ruler pill |
+| `--sheet` | `#2b2e3d` | add sheet tab row + right column (grid area is black) |
+| `--field` | `#333750` | number boxes (cyan values `#5ccfe6`) |
+| `--pad` | `#272a3d` | Edit Points trackpad |
+| `--tcpill` | `#313547` | timecode pill over the playhead |
+| `--ac` | `#00ffa8` | mint accent: export button, + FAB outline, active sheet tab, slider fill, active tool |
+| `--clip` | `#2a7fe4` | shape clip blue (drawing `#9886d7`, audio `#1fa58a`) |
+| text | `#fff` / `#a9abb6` / `#6f7385`, tile labels `#7c7f91` | |
 
-## Layout map
-### Home (project list) — `#home`
-- Top bar: wordmark **KINETIC** left; **settings gear** top-right (about / storage / import).
-- Segmented tabs under it: **Projects** | **Elements** (Elements = disabled placeholder).
-- Project cards: thumbnail left (aspect-shaped), name, "9:16 · 6.0s · date", ⋯ menu (Delete) right.
-- Big round **+** floating at the bottom centre → New Project sheet (aspect ratio grid, Create).
+Font: system sans (SF on iPhone). Icons: 24 viewBox, ~1.6px round-cap strokes.
 
-### Editor
-1. **Top bar** `#top`: ← back (to project list) · project title · undo · redo · ⚙ project settings · export/share icon.
-2. **Preview** `#stageWrap`: canvas centred on dark grey, no grid glow.
-3. **Play bar** `#transport`: play/pause left, timecode `00:01.60 / 00:06.00`, keyframe ◆ button, zoom, loop.
-4. **Timeline** `#timeline`: layer rows with a type icon + name on the left, clip bars as rounded grey/blue
-   bars, white playhead line with blue head, ruler on top, END marker. Gestures unchanged.
-5. **Bottom toolbar** `#tabs`: round blue **+** (Add) first, then horizontally scrollable icon+label items:
-   **Move & Transform, Color & Fill, Border & Shadow, Effects, Blending & Opacity, Keyframes**.
-6. **Property sheet** `#panel`: slides up between timeline and toolbar with a header (title + ✓ close).
+## Layout
+### Editor (nothing selected) — `body[data-mode=none]`
+1. Top bar: `<` back (to projects) · editable project name · ⚙ project settings · mint export button.
+2. Full-width preview on a dark background.
+3. Transport row: undo · redo · go-to-start · play · go-to-end · duplicate layer · fit/fullscreen preview.
+4. Timeline with a **fixed centre playhead**: the tracks scroll underneath it (`scrollLeft == t * pps`, t = 0 at
+   the centre); ruler with a `mm:ss:ff` timecode pill centred on the playhead; layer rows = rounded pill on the
+   left (eye + thumbnail, sticky) + clip strip. Past-end region shaded with a draggable END marker.
+5. Mint outlined **+** FAB bottom right; no toolbar.
+### + sheet (`#sheet`)
+Tabs **Shape · Media · Audio · Object / Element · Template** (active = mint); right column **Freehand Drawing ·
+Vector Drawing · Text · ✕**. Shape = paged grey shape grid (2 x 15, own shape set). Media = import + project
+media; Audio = import audio files + project audio; Object = Solid Color, Adjustment, Camera / Empty Group / Null /
+Element (last four "coming soon"); Template = Demo project (+ "coming soon" browse).
+### Layer selected — `data-mode=sel`
+Top bar: `<` · layer name · duplicate · trash · ⋯ (layer menu). The clip becomes a white pill with `<` / `>` trim
+caps; the row scrolls to the top. Tile grid: small tiles (speed — soon, trim start, split, trim end, mute), then
+**Color & Fill · Border & Shadow · Blending & Opacity**, **Move & Transform · Edit Shape/Text/Media · Presets
+(soon) · Effects**, then Easing / layer up / down / lock.
+### Sub panels — `data-mode=sub`
+Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and tools, body on the right.
+- **Edit Points** (vector drawing / "Convert to Points"): tap the preview to add points, drag them; trackpad +
+  X/Y inputs position the next point; close-path toggle; ⊕ in the top bar adds a point at the cursor.
+- **Drawing** (freehand layer): size slider, hex colour bar + 14 swatches, eyedropper / clear / palette; right
+  column pencil · brush · smudge (soon) · eraser.
 
-### Add (+) menu
-Sections **Shapes** (rect, ellipse, triangle, star, polygon, ring, line), **Media** (Image & Video), **Text**,
-**Audio** (disabled: not supported yet), **Element** (Solid, Adjustment, Demo).
+## Behaviour
+- New layers go **on top** (index 0 = top row = rendered last).
+- Timeline gestures kept: pan anywhere (incl. ruler, which now scrubs via the centre playhead), axis lock +
+  momentum, long-press to move clips / keyframes, edge auto-scroll, END marker, rubber band at 0, pinch zoom
+  about the playhead; with a layer selected panning is horizontal-only. iOS safe areas respected.
 
 ## Knowingly different
-- Name, logo, wordmark, icons are original. Accent colour approximated.
-- No Audio layers, drawing tools, Elements library or account/cloud — shown disabled or omitted.
-- Keyframe easing editor (bezier) is KINETIC's own; Alight's graph UI differs.
-- Toolbar always lists all categories (also with nothing selected; panels then say "Select a layer").
+- Name, logo, icons and shape set are KINETIC's own; no watermark, music or template library.
+- Camera, Empty Group, Null, Elements, Templates browse, Presets, Speed and Smudge are "coming soon" toasts.
+- Edit Points is simplified (straight segments, no bezier handles); no preview zoom (magnifier) button.
+- Selection overlay keeps a rotate handle + square scale handle (Alight shows only dots).
+- Keyframe easing editor (bezier) is KINETIC's own.

@@ -29,7 +29,7 @@ export async function exportVideo(project, { format = 'auto', shortSide = 1080, 
   const renderer = new Renderer();
   renderer.render(project, 0, canvas);
   const stream = canvas.captureStream(fps);
-  const vids = project.layers.filter(L => L.type === 'video' && media.get(L.media.id));
+  const vids = project.layers.filter(L => (L.type === 'video' || L.type === 'audio') && media.get(L.media.id));
   let dest;
   if (audio && vids.length) {
     try {
@@ -66,7 +66,7 @@ export async function exportVideo(project, { format = 'auto', shortSide = 1080, 
   rec.stop();
   await done;
   stream.getTracks().forEach(t => t.stop());
-  if (dest) for (const L of vids) { const m = media.get(L.media.id); try { m.gain.disconnect(dest); } catch {} m.el.muted = true; }
+  if (dest) for (const L of vids) { const m = media.get(L.media.id); try { m.gain.disconnect(dest); } catch {} m.el.muted = m.type !== 'audio'; }
   syncVideos(project, 0, false);
   const type = mime.split(';')[0];
   const blob = new Blob(chunks, { type });

@@ -1,21 +1,62 @@
-"""Phone-sized (390x844) screenshots of home, editor, add menu and property panel -> /workspace/kntc-shots."""
+"""iPhone-sized (440x956 @2x, iOS safe areas simulated) screenshots -> /workspace/kntc-shots, plus side-by-side
+comparisons against the reference screenshots in reference/ (git-ignored) when present -> /workspace/kntc-shots/compare."""
 import os
 from playwright.sync_api import sync_playwright
 BASE = os.environ.get('BASE', 'http://localhost:8765/'); OUT = '/workspace/kntc-shots'
+REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'reference')
+PAIRS = [('editor', '01-editor'), ('add-shape', '02-add-shape'), ('add-media', '03-add-media'), ('add-audio', '04-add-audio'),
+         ('add-object', '05-add-object'), ('add-template', '06-add-template'), ('layer-selected', '07-layer-selected'),
+         ('edit-points', '08-edit-points'), ('drawing', '09-drawing')]
+os.makedirs(OUT, exist_ok=True)
 with sync_playwright() as pw:
     b = pw.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader'])
-    pg = b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=3, is_mobile=True, has_touch=True).new_page()
-    pg.goto(BASE); pg.wait_for_function('window.__app && __app.project'); pg.evaluate('localStorage.clear()'); pg.reload()
+    pg = b.new_context(viewport={'width': 440, 'height': 956}, device_scale_factor=2, is_mobile=True, has_touch=True).new_page()
+    errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    P = pg.evaluate
+    def shot(name, wait=350): pg.wait_for_timeout(wait); pg.screenshot(path=f'{OUT}/{name}.png'); print('wrote', f'{OUT}/{name}.png')
+    pg.goto(BASE); pg.wait_for_function('window.__app && __app.project'); P('localStorage.clear()'); pg.reload()
     pg.wait_for_selector('[data-testid=home-open]')
-    pg.evaluate("(() => { const a = __app; a.project.name = 'Birthday intro'; a.commit(); a.showHome(); })()"); pg.wait_for_timeout(300)
-    pg.evaluate("(() => { const a = __app; const p = a.demoProject('9:16'); p.name = 'Neon Demo'; a.setProject(p); a.showHome(); })()"); pg.wait_for_timeout(400)
-    pg.screenshot(path=f'{OUT}/home.png')
+    # simulate the iPhone status bar / home indicator insets (env() is 0 in desktop Chromium)
+    P("document.documentElement.style.setProperty('--safe-t', '59px'); document.documentElement.style.setProperty('--safe-b', '34px')")
+    P("(() => { const a = __app; a.project.name = 'Birthday intro'; a.commit(); a.showHome(); })()"); pg.wait_for_timeout(300)
+    P("(() => { const a = __app; const p = a.demoProject('9:16'); p.name = 'Neon Demo'; a.setProject(p); a.showHome(); })()"); pg.wait_for_timeout(300)
+    shot('home')
     pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(300)
-    pg.evaluate("__app.S.tab = null; __app.seek(1.6); __app.refreshAll()"); pg.wait_for_timeout(300)
-    pg.screenshot(path=f'{OUT}/editor.png')
-    pg.click('[data-testid=tab-add]'); pg.wait_for_timeout(300); pg.screenshot(path=f'{OUT}/add-menu.png')
-    pg.evaluate("(() => { const a = __app; a.S.sel = a.project.layers[2].id; a.S.tab = 'layer'; a.refreshAll(); })()"); pg.wait_for_timeout(300)
-    pg.screenshot(path=f'{OUT}/property-panel.png')
-    pg.evaluate("(() => { const a = __app; a.S.tab = 'style'; a.refreshAll(); })()"); pg.wait_for_timeout(300)
-    pg.screenshot(path=f'{OUT}/property-color-fill.png')
+    shot('editor')
+    pg.click('[data-testid=tab-add]'); shot('add-shape')
+    for t in ('media', 'audio', 'object', 'template'):
+        pg.click(f'[data-testid=sheet-{t}]'); shot(f'add-{t}')
+    pg.click('[data-testid=sheet-shape]'); pg.click('[data-testid=add-rect]'); shot('layer-selected')
+    pg.click('[data-testid=tab-layer]'); shot('sub-transform')
+    pg.click('[data-testid=panel-back]'); pg.click('[data-testid=tab-style]'); shot('sub-color-fill')
+    # vector drawing -> Edit Points: tap a few points on the preview
+    pg.click('[data-testid=btn-back]'); pg.click('[data-testid=btn-back]')
+    pg.click('[data-testid=tab-add]'); pg.click('[data-testid=add-vector]'); pg.wait_for_timeout(200)
+    sb = pg.locator('#stage').bounding_box()
+    for fx, fy in [(0.3, 0.32), (0.72, 0.4), (0.62, 0.68), (0.28, 0.6)]:
+        pg.mouse.click(sb['x'] + sb['width'] * fx, sb['y'] + sb['height'] * fy); pg.wait_for_timeout(120)
+    shot('edit-points')
+    # freehand drawing: a couple of strokes in two colours
+    pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(100)
+    if P("document.body.dataset.mode") != 'none': pg.click('[data-testid=btn-back]')
+    pg.click('[data-testid=tab-add]'); pg.click('[data-testid=add-draw]'); pg.wait_for_timeout(200)
+    def stroke(pts):
+        pg.mouse.move(sb['x'] + sb['width'] * pts[0][0], sb['y'] + sb['height'] * pts[0][1]); pg.mouse.down()
+        for fx, fy in pts[1:]: pg.mouse.move(sb['x'] + sb['width'] * fx, sb['y'] + sb['height'] * fy, steps=6)
+        pg.mouse.up(); pg.wait_for_timeout(100)
+    stroke([(0.25, 0.3), (0.4, 0.22), (0.55, 0.35), (0.7, 0.25), (0.78, 0.4)])
+    pg.locator('[data-testid=swatch]').nth(0).click()
+    stroke([(0.3, 0.62), (0.45, 0.72), (0.6, 0.6), (0.72, 0.7)])
+    shot('drawing')
     b.close()
+    print('page errors:', errs)
+
+if os.path.isdir(REF):
+    from PIL import Image
+    os.makedirs(f'{OUT}/compare', exist_ok=True)
+    for ours, ref in PAIRS:
+        rp = f'{REF}/{ref}.jpg'
+        if not os.path.exists(rp) or not os.path.exists(f'{OUT}/{ours}.png'): continue
+        a = Image.open(rp).convert('RGB').resize((471, 1024)); o = Image.open(f'{OUT}/{ours}.png').convert('RGB').resize((471, 1024))
+        c = Image.new('RGB', (950, 1024), 'white'); c.paste(a, (0, 0)); c.paste(o, (479, 0)); c.save(f'{OUT}/compare/{ours}.png')
+        print('wrote', f'{OUT}/compare/{ours}.png')

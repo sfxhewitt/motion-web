@@ -5,3 +5,5 @@ __pycache__/
 *.apkm
 *.xapk
 jadx-out/
+reference/
+timeline-issue.mp4

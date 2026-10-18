@@ -44,14 +44,16 @@ export function makeLayer(p, type, opts = {}) {
   switch (type) {
     case 'shape': {
       const kind = opts.kind || 'rect';
-      L = baseLayer(p, 'shape', kind[0].toUpperCase() + kind.slice(1));
+      L = baseLayer(p, 'shape', opts.name || 'Shape ' + (p.layers.filter(l => l.type === 'shape').length + 1));
       L.shape = {
         kind, w: short * 0.4, h: short * 0.4, radius: kind === 'rect' ? short * 0.02 : 0,
         points: kind === 'polygon' ? 6 : 5, inner: 0.45, thickness: 0.25,
-        fill: nextColor(), fill2: '#ff2bd6', gradient: false, gradAngle: 45,
+        fill: opts.fill || nextColor(), fill2: '#ff2bd6', gradient: false, gradAngle: 45,
         stroke: '#ffffff', strokeW: 0, fillOn: true,
+        ...(opts.shape || {}),
       };
       if (kind === 'line') { L.shape.h = short * 0.02; L.shape.w = short * 0.6; }
+      if (kind === 'path') { L.shape.pts = opts.pts || []; L.shape.closed = true; L.shape.fill = opts.fill || '#d8d8d8'; }
       break;
     }
     case 'text': {
@@ -65,6 +67,17 @@ export function makeLayer(p, type, opts = {}) {
     case 'solid': {
       L = baseLayer(p, 'solid', 'Solid');
       L.solid = { color: opts.color || '#12131c', fill2: '#2a0a3a', gradient: false, gradAngle: 90 };
+      break;
+    }
+    case 'draw': {
+      L = baseLayer(p, 'draw', 'Drawing ' + (p.layers.filter(l => l.type === 'draw').length + 1));
+      L.draw = { strokes: [] };
+      break;
+    }
+    case 'audio': {
+      L = baseLayer(p, 'audio', opts.name || 'Audio');
+      L.media = { id: opts.mediaId, volume: 1, offset: 0, duration: opts.mediaDuration || 0 };
+      if (opts.mediaDuration) L.end = Math.min(p.duration, opts.mediaDuration);
       break;
     }
     case 'adjust': {
