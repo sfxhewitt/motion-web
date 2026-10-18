@@ -35,14 +35,20 @@
   </header>
   <main id="stageWrap">
     <div id="stage"><canvas id="view" data-testid="view"></canvas><canvas id="overlay"></canvas></div>
+    <button id="btnZoom" class="zb" title="Fit preview" aria-label="Fit preview" data-testid="zoom-fit"></button>
+    <div id="zoomHud" class="zhud" data-testid="zoom-hud" aria-live="polite"><span class="zi"></span><b>100%</b></div>
+    <div id="sizeModes" class="szms" data-testid="size-modes" hidden></div>
+    <div id="modeBadge" class="mbadge" data-testid="mode-badge"></div>
   </main>
   <section id="transport">
     <button id="btnUndo" class="ib" title="Undo" data-testid="undo"></button>
     <button id="btnRedo" class="ib" title="Redo" data-testid="redo"></button>
     <button id="btnStart" class="ib" title="Go to start" data-testid="go-start"></button>
+    <button id="btnKPrev" class="ib kfnav m-kf" title="Previous keyframe" data-testid="kf-prev"></button>
     <button id="btnPlay" class="ib play" title="Play / Pause (space)" data-testid="play"></button>
+    <button id="btnKNext" class="ib kfnav m-kf" title="Next keyframe" data-testid="kf-next"></button>
     <button id="btnEnd" class="ib" title="Go to end" data-testid="go-end"></button>
-    <button id="btnCopy" class="ib" title="Duplicate layer" data-testid="copy-layer"></button>
+    <button id="btnCopy" class="ib" title="Layer actions" data-testid="copy-layer"></button>
     <button id="btnFit" class="ib" title="Full-screen preview" data-testid="fit"></button>
   </section>
   <section id="bottom">

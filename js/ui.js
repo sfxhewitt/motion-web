@@ -70,6 +70,12 @@ export const ICONS = {
   back: '<path d="M15 4.5 7.5 12l7.5 7.5"/>',
   chevl: '<path d="M14 6l-6 6 6 6"/>',
   chevr: '<path d="M10 6l6 6-6 6"/>',
+  zoom: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5 5M8 10.5h5M10.5 8v5"/>',
+  'sz-center': '<rect x="4" y="4" width="16" height="16" rx="1.5" stroke-dasharray="2 2.2"/><path d="M12 12l5-5M14 7h3v3M12 12l-5 5M10 17H7v-3"/>',
+  'sz-edge': '<rect x="4" y="4" width="16" height="16" rx="1.5" stroke-dasharray="2 2.2"/><path d="M4.5 19.5L17 7M12.5 7H17v4.5"/><circle cx="4.5" cy="19.5" r="1.6" fill="currentColor"/>',
+  'sz-free': '<rect x="4" y="7" width="16" height="10" rx="1.5" stroke-dasharray="2 2.2"/><path d="M1.5 12h4M3 10.5 1.5 12 3 13.5M22.5 12h-4M21 10.5l1.5 1.5-1.5 1.5M12 1.5v4M10.5 3 12 1.5 13.5 3M12 22.5v-4M10.5 21l1.5 1.5 1.5-1.5"/>',
+  kfprev: '<path d="M10 6l-6 6 6 6"/><path d="M15.5 8l4 4-4 4-4-4Z"/>',
+  kfnext: '<path d="M14 6l6 6-6 6"/><path d="M8.5 8l4 4-4 4-4-4Z"/>',
   // ⧉ copy menu (reference/16): outline icons, dotted squares = clipboard
   selall: '<path d="M3.5 5.5h9.5a3.6 3.6 0 0 1 1.2 7"/><path d="M3.5 12h6.5M3.5 18.5h6"/><path d="M12.6 12.4h2.4a3.4 3.4 0 0 1 0 6.8h-1.2"/><path d="M11.2 16.4l1.9 1.9 3.4-3.6"/>',
   'cm-dup': '<rect x="3.5" y="8" width="12" height="12" rx="2.5"/><path d="M8.5 8V6a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 20.5 6v7a2.5 2.5 0 0 1-2.5 2.5h-2.5"/><path d="M14.5 6.5v6M11.5 9.5h6"/>',

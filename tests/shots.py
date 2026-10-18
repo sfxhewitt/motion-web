@@ -75,6 +75,16 @@ with sync_playwright() as pw:
     P("localStorage.removeItem('kntc.clipboard')")
     pg.click('[data-testid=copy-layer]'); shot('copy-menu', 400)
     pg.keyboard.press('Escape'); pg.wait_for_timeout(150)
+    # v10: selection box + size modes on a selected shape, snapping guides mid-drag, zoomed preview with HUD, Size ruler, Project Settings sheet
+    P("(() => { const a = __app, p = a.project, L = p.layers.find(l => l.name === 'Circle 1'); a.selectLayer(L.id); })()"); pg.wait_for_timeout(200)
+    shot('selection-box', 300)
+    hp = P("__app.handlePoints()"); c = hp['center']; vs = hp['viewScale']; W = P("__app.project.w"); x0 = P("__app.S.sel && __app.project.layers.find(l => l.id === __app.S.sel).props.x")
+    pg.mouse.move(*c); pg.mouse.down(); pg.mouse.move(c[0] + (W / 2 - x0) * vs + 2, c[1] + 30, steps=8); pg.wait_for_timeout(100); shot('snap-guides', 100); pg.mouse.up(); pg.wait_for_timeout(100)
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    P("__app.deselect(); __app.setZoom(1.6, -40, 30)"); shot('zoom-hud', 120); P("__app.resetZoom()")
+    P("(() => { const a = __app, L = a.project.layers.find(l => l.name === 'Circle 1'); a.selectLayer(L.id); a.openSub('edit'); })()"); shot('size-ruler', 400)
+    pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(100); pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(100)
+    pg.click('[data-testid=tab-project]'); shot('project-settings', 500); pg.click('[data-testid=proj-close]'); pg.wait_for_timeout(300)
     b.close()
     print('page errors:', errs)
 

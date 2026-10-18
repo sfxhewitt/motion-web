@@ -9,7 +9,11 @@ import { $, h, slider, color, toggle, select, chips, section, toast, icon } from
 // ---------------- state ----------------
 // tab: null (nothing / tile grid when a layer is selected) | 'add' (add sheet) | a sub panel id (see SUB_TITLE)
 const S = { project: null, t: 0, playing: false, sel: null, multi: new Set(), selKeys: new Set(), tab: null, addTab: 'shape', pps: 60, autoFit: false, loop: true, fxCat: 'All',
-  draw: { tool: 'pencil', size: 16, color: '#0000ff' }, cursor: null, picking: false, full: false };
+  draw: { tool: 'pencil', size: 16, color: '#0000ff' }, cursor: null, picking: false, full: false,
+  vz: { k: 1, x: 0, y: 0 },  // preview zoom (1 = fit) + pan offset in css px
+  sizeMode: localStorage.getItem('kntc.sizeMode') || 'center', // handle drags: 'center' | 'edge' | 'free'
+  guides: [] };            // red snap guides while dragging a layer
+const SIZE_MODES = [['center', 'Size from center', 'sz-center'], ['edge', 'Size from edge', 'sz-edge'], ['free', 'Resize Freely', 'sz-free']];
 const history = new History();
 const renderer = new Renderer();
 const view = $('#view'), overlay = $('#overlay'), stage = $('#stage');
@@ -31,7 +35,7 @@ function commit(opts = {}) {
 let saveTimer;
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (!store.saveProject(P())) toast('Storage full — export JSON to keep work'); }, 350); }
 
-function refreshAll() { if (layerMenu && !selLayer()) closeLayerMenu(); closeCopyMenu(); layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
+function refreshAll() { if (layerMenu && !selLayer()) closeLayerMenu(); closeCopyMenu(); layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); renderSizeModes(); }
 
 // body[data-mode] drives the top bar / bottom zone (none: timeline + FAB, sel: tile grid, sub: property panel)
 function layoutChrome() {
@@ -96,7 +100,7 @@ async function importAudioFile(file) {
 
 // ---------------- project ops ----------------
 function setProject(p, { resetHistory = true } = {}) {
-  S.project = p; S.sel = null; S.multi.clear(); S.selKeys.clear(); S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
+  S.project = p; S.sel = null; S.multi.clear(); S.selKeys.clear(); S.vz = { k: 1, x: 0, y: 0 }; S.tab = null; S.t = Math.min(S.t, p.duration); G.extT = 0; G.lastSel = null;
   if (resetHistory) history.reset(p);
   store.saveProject(p); hydrateMedia(p); refreshAll();
 }
@@ -180,15 +184,86 @@ function demoProject(aspect = '9:16') {
 function layoutStage() {
   const wrap = $('#stageWrap'), r = wrap.getBoundingClientRect();
   const p = P(); if (!p || r.width < 2 || r.height < 2) return;
-  const sc = Math.min(r.width / p.w, r.height / p.h);
-  const cw = Math.max(40, Math.floor(p.w * sc)), ch = Math.max(40, Math.floor(p.h * sc));
+  const sc = Math.min(r.width / p.w, r.height / p.h), k = S.vz.k;
+  const cw = Math.max(40, Math.round(p.w * sc * k)), ch = Math.max(40, Math.round(p.h * sc * k));
   viewScale = cw / p.w;
   stage.style.width = cw + 'px'; stage.style.height = ch + 'px';
+  stage.style.translate = `${S.vz.x}px ${S.vz.y}px`;
+  const zoomed = k !== 1 || S.vz.x || S.vz.y;
+  wrap.classList.toggle('zoomed', !!zoomed);
+  wrap.style.background = zoomed ? p.bg : ''; // zoomed / panned: the area outside the composition shows the project background
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const bw = Math.min(p.w, Math.round(cw * dpr)), bh = Math.round(bw * p.h / p.w);
   if (view.width !== bw || view.height !== bh) { view.width = bw; view.height = bh; }
-  const ow = Math.round(cw * dpr), oh = Math.round(ch * dpr);
+  const cap = Math.min(1, 4096 / Math.max(cw * dpr, ch * dpr)), ow = Math.round(cw * dpr * cap), oh = Math.round(ch * dpr * cap);
   if (overlay.width !== ow || overlay.height !== oh) { overlay.width = ow; overlay.height = oh; }
+}
+// ---- preview zoom / pan (pinch on the preview, one-finger drag while zoomed, magnifier resets to fit) ----
+const VZ_MIN = 0.25, VZ_MAX = 8;
+let hudT = 0;
+function showZoomHud() {
+  const hud = $('#zoomHud'); hud.lastChild.textContent = Math.round(S.vz.k * 100) + '%';
+  hud.classList.add('show'); clearTimeout(hudT); hudT = setTimeout(() => hud.classList.remove('show'), 1100);
+}
+function setZoom(k, x, y, hud = true) {
+  S.vz.k = Math.max(VZ_MIN, Math.min(VZ_MAX, k)); S.vz.x = x; S.vz.y = y;
+  if (Math.abs(S.vz.k - 1) < 0.02 && hud === 'snap') { S.vz.k = 1; }
+  layoutStage(); drawFrame(); if (hud) showZoomHud();
+}
+function resetZoom() { setZoom(1, 0, 0); }
+// a centre point C (client) of the stage; keeping the content point under the fingers fixed while scaling
+function stageCentre() { const r = $('#stageWrap').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
+const VP = { ptrs: new Map(), pinch: null, pan: null };
+function bindPreviewZoom() {
+  const wrap = $('#stageWrap');
+  wrap.addEventListener('pointerdown', e => {
+    if (!P() || e.target.closest('button')) return;
+    VP.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+    if (VP.ptrs.size === 1) VP.hadSel = !!S.sel; // (the first finger may select a layer on its way down)
+    if (VP.ptrs.size === 2 && !['draw', 'points'].includes(S.tab)) {
+      // a selected layer under either finger -> the layer pinch (scale/rotate) runs instead; otherwise the view zooms
+      const L = selLayer(), r = stage.getBoundingClientRect();
+      const onL = VP.hadSel && L && [...VP.ptrs.values()].some(q => hitTest((q.x0 - r.left) / viewScale, (q.y0 - r.top) / viewScale) === L);
+      if (!onL) {
+        const [a, b] = [...VP.ptrs.values()], C = stageCentre();
+        VP.pinch = { d0: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), m0: [(a.x + b.x) / 2, (a.y + b.y) / 2], k0: S.vz.k, c0: [C[0] + S.vz.x, C[1] + S.vz.y] };
+        VP.pan = null; cancelStageGesture();
+        if (!VP.hadSel && S.sel) { S.sel = null; S.selKeys.clear(); refreshAll(); } // nothing was selected: the pinch only zooms
+      }
+    }
+  }, true);
+  wrap.addEventListener('pointermove', e => {
+    const q = VP.ptrs.get(e.pointerId); if (!q) return;
+    q.x = e.clientX; q.y = e.clientY;
+    if (VP.pinch) {
+      if (VP.ptrs.size < 2) return;
+      const [a, b] = [...VP.ptrs.values()], pz = VP.pinch, C = stageCentre();
+      const k = Math.max(VZ_MIN, Math.min(VZ_MAX, pz.k0 * Math.hypot(a.x - b.x, a.y - b.y) / pz.d0)), m = [(a.x + b.x) / 2, (a.y + b.y) / 2];
+      // content point under the starting midpoint follows the fingers
+      const cx = m[0] - (pz.m0[0] - pz.c0[0]) * k / pz.k0, cy = m[1] - (pz.m0[1] - pz.c0[1]) * k / pz.k0;
+      setZoom(k, cx - C[0], cy - C[1]);
+      return;
+    }
+    // one finger while zoomed: pan, unless it is moving / drawing / editing something on the canvas
+    const zoomed = S.vz.k !== 1 || S.vz.x || S.vz.y;
+    if (VP.ptrs.size === 1 && zoomed && (!gesture || gesture.mode === 'tap')) {
+      if (!VP.pan) { if (Math.hypot(q.x - q.x0, q.y - q.y0) < TAP_SLOP) return; VP.pan = { x0: S.vz.x, y0: S.vz.y }; if (gesture) gesture.cancel = true; }
+      setZoom(S.vz.k, VP.pan.x0 + q.x - q.x0, VP.pan.y0 + q.y - q.y0, false);
+    }
+  });
+  const up = e => { if (!VP.ptrs.delete(e.pointerId)) return; if (VP.ptrs.size < 2 && VP.pinch) { VP.pinch = null; if (Math.abs(S.vz.k - 1) < 0.04) setZoom(1, S.vz.x, S.vz.y); } if (!VP.ptrs.size) VP.pan = null; };
+  wrap.addEventListener('pointerup', up, true); wrap.addEventListener('pointercancel', up, true); wrap.addEventListener('lostpointercapture', up, true);
+  // desktop: ctrl / trackpad-pinch wheel over the preview zooms around the cursor
+  wrap.addEventListener('wheel', e => {
+    if (!e.ctrlKey || !P()) return; e.preventDefault();
+    const C = stageCentre(), k0 = S.vz.k, k = Math.max(VZ_MIN, Math.min(VZ_MAX, k0 * Math.exp(-e.deltaY * 0.01)));
+    const c0 = [C[0] + S.vz.x, C[1] + S.vz.y], cx = e.clientX - (e.clientX - c0[0]) * k / k0, cy = e.clientY - (e.clientY - c0[1]) * k / k0;
+    setZoom(k, cx - C[0], cy - C[1]);
+  }, { passive: false });
+}
+function cancelStageGesture() {
+  if (gesture && gesture.moved && gesture.snap0) { const g = gesture.snap0; writeProp(g.L, 'x', S.t, g.x); writeProp(g.L, 'y', S.t, g.y); }
+  gesture = null; S.guides = []; drawFrame();
 }
 
 function drawFrame() {
@@ -211,7 +286,11 @@ function toWorld(L, lx, ly, flip = true) {
 function layerCorners(L) {
   const tr = evalTransform(L, S.t), b = layerBounds(L, P(), view.getContext('2d'));
   const pt = (lx, ly) => toWorld(L, lx, ly, false);
-  return { tr, b, pt, corners: [pt(-b.w / 2, -b.h / 2), pt(b.w / 2, -b.h / 2), pt(b.w / 2, b.h / 2), pt(-b.w / 2, b.h / 2)], rotH: pt(0, -b.h / 2 - 60 / (tr.scale * viewScale || 1)) };
+  const corners = [pt(-b.w / 2, -b.h / 2), pt(b.w / 2, -b.h / 2), pt(b.w / 2, b.h / 2), pt(-b.w / 2, b.h / 2)];
+  const mids = [0, 1, 2, 3].map(i => { const a = corners[i], c = corners[(i + 1) % 4]; return [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2]; }); // top, right, bottom, left
+  // Alight: a detached green rotation knob below the box on a thin stem
+  const sgn = Math.sign(tr.scale) || 1;
+  return { tr, b, pt, corners, mids, rotH: pt(0, b.h / 2 + sgn * 38 / (Math.abs(tr.scale) * viewScale || 1)) };
 }
 
 function drawOverlay() {
@@ -243,11 +322,94 @@ function drawOverlay() {
   const g = layerCorners(L), c = g.corners;
   ctx.lineWidth = 1.6 / k * dpr; ctx.strokeStyle = '#fff';
   ctx.beginPath(); c.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.stroke();
-  const top = [(c[0][0] + c[1][0]) / 2, (c[0][1] + c[1][1]) / 2];
-  ctx.beginPath(); ctx.moveTo(...top); ctx.lineTo(...g.rotH); ctx.stroke();
-  for (let i = 0; i < 4; i++) { const a = c[i], b = c[(i + 1) % 4]; dot(...a); dot((a[0] + b[0]) / 2, (a[1] + b[1]) / 2); }
-  dot(...g.rotH, 7); ctx.beginPath(); ctx.arc(...g.rotH, 7 / k * dpr, 0, Math.PI * 2); ctx.strokeStyle = '#000'; ctx.lineWidth = 1 / k * dpr; ctx.stroke();
-  const sh = 7 / k * dpr; ctx.fillStyle = '#fff'; ctx.fillRect(c[2][0] - sh, c[2][1] - sh, sh * 2, sh * 2); ctx.strokeStyle = '#000'; ctx.strokeRect(c[2][0] - sh, c[2][1] - sh, sh * 2, sh * 2);
+  // thin stem from the bottom edge to the green rotation knob
+  ctx.lineWidth = 1.2 / k * dpr; ctx.beginPath(); ctx.moveTo(...g.mids[2]); ctx.lineTo(...g.rotH); ctx.stroke();
+  // 8 white circular handles (corners + edge midpoints) with a soft dark rim
+  const knob = (x, y, r, fill) => { ctx.beginPath(); ctx.arc(x, y, r / k * dpr, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = 3 * dpr; ctx.fill(); ctx.shadowBlur = 0;
+    ctx.lineWidth = 1 / k * dpr; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.stroke(); };
+  [...c, ...g.mids].forEach(p => knob(p[0], p[1], 6, '#fff'));
+  knob(...g.rotH, 8, ACCENT);
+  drawGuides(ctx, k, dpr);
+}
+// red full-span snap guides (composition centre / edges, other layers' edges)
+function drawGuides(ctx, k, dpr) {
+  if (!S.guides.length) return;
+  const p = P(); ctx.save(); ctx.strokeStyle = '#ff2d55'; ctx.lineWidth = 1.2 / k * dpr; ctx.beginPath();
+  for (const gd of S.guides) { if (gd.x != null) { ctx.moveTo(gd.x, 0); ctx.lineTo(gd.x, p.h); } else { ctx.moveTo(0, gd.y); ctx.lineTo(p.w, gd.y); } }
+  ctx.stroke(); ctx.restore();
+}
+// world-space AABB of a layer (optionally with its centre moved to cx, cy)
+function layerAABB(L) {
+  const g = layerCorners(L), xs = g.corners.map(q => q[0]), ys = g.corners.map(q => q[1]);
+  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys), cx: g.tr.x, cy: g.tr.y };
+}
+// magnetic snapping: returns the snapped centre and the guides to draw
+function snapMove(L, nx, ny) {
+  const p = P(), box = layerAABB(L), thr = 8 / viewScale;
+  const offX = [box.l - box.cx, 0, box.r - box.cx], offY = [box.t - box.cy, 0, box.b - box.cy];
+  const tx = [0, p.w / 2, p.w], ty = [0, p.h / 2, p.h];
+  for (const o of p.layers) {
+    if (o === L || !o.visible || !visualLayer(o) || o.type === 'solid' || S.t < o.start || S.t >= o.end) continue;
+    const ob = layerAABB(o); tx.push(ob.l, ob.cx, ob.r); ty.push(ob.t, ob.cy, ob.b);
+  }
+  const best = (c, offs, ts) => { let m = null; for (const of of offs) for (const t of ts) { const d = t - (c + of); if (Math.abs(d) < thr && (!m || Math.abs(d) < Math.abs(m.d))) m = { d, v: t }; } return m; };
+  const bx = best(nx, offX, tx), by = best(ny, offY, ty), guides = [];
+  if (bx) { nx += bx.d; for (const of of offX) for (const t of tx) if (Math.abs(nx + of - t) < 0.5) guides.push({ x: t }); }
+  if (by) { ny += by.d; for (const of of offY) for (const t of ty) if (Math.abs(ny + of - t) < 0.5) guides.push({ y: t }); }
+  return { nx, ny, guides };
+}
+// ---- handle drags: corners scale (uniform; free = per axis), edges scale one axis; size from centre / from edge / freely ----
+const HANDLES = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0]]; // corners (tl tr br bl), then mids (top right bottom left)
+function dimsOf(L) {
+  if (L.type === 'shape' && L.shape.kind !== 'path') return { get: () => [L.shape.w, L.shape.h], set: (w, h) => { L.shape.w = w; L.shape.h = h; } };
+  if (L.type === 'shape') { const p0 = L.shape.pts.map(q => q.slice()), b = layerBounds(L, P(), null);
+    return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1)]); } }; }
+  if (L.type === 'image' || L.type === 'video') return { get: () => [L.media.w, L.media.h], set: (w, h) => { L.media.w = w; L.media.h = h; } };
+  return null; // text / solid / drawing: one uniform scale
+}
+function startHandle(L, hi, px, py) {
+  const g = layerCorners(L), tr = g.tr, d = dimsOf(L), [w0, h0] = d ? d.get() : [g.b.w, g.b.h];
+  return { mode: 'handle', L, hi, sx: HANDLES[hi][0], sy: HANDLES[hi][1], x0: tr.x, y0: tr.y, s0: valueAt(L, 'scale', S.t), rot: tr.rotation * Math.PI / 180, w0, h0, dims: d, bw: g.b.w, bh: g.b.h,
+    p0: handleLocal(tr.x, tr.y, tr.rotation * Math.PI / 180, valueAt(L, 'scale', S.t), px, py), moved: false };
+}
+// pointer -> local units of the box at the start of the drag (unflipped, unscaled content units)
+function handleLocal(x0, y0, rot, s, px, py) { const dx = px - x0, dy = py - y0, c = Math.cos(-rot), sn = Math.sin(-rot); return [(dx * c - dy * sn) / s, (dx * sn + dy * c) / s]; }
+function moveHandle(g, px, py) {
+  const { L, sx, sy, s0, rot } = g, [lx, ly] = handleLocal(g.x0, g.y0, rot, s0, px, py), mode = S.sizeMode;
+  const fromEdge = mode !== 'center', corner = sx && sy, hw = g.bw / 2, hh = g.bh / 2;
+  // anchor (local): the centre, or the opposite corner / edge
+  const ax = fromEdge ? -sx * hw : 0, ay = fromEdge ? -sy * hh : 0;
+  const ext = (v, a, sgn, half) => Math.max(1e-3, ((v - a) * sgn) / ((sgn * half - a) * sgn || 1)); // new/old extent from the anchor along one axis
+  let fx = 1, fy = 1;
+  if (sx) fx = ext(lx, ax, sx, hw);
+  if (sy) fy = ext(ly, ay, sy, hh);
+  const free = mode === 'free' || !corner;
+  if (corner && !free) { const f = Math.max(1e-3, Math.hypot(lx - ax, ly - ay) / Math.hypot(sx * hw - ax, sy * hh - ay)); fx = fy = f; }
+  if (!g.dims && (free || !corner)) { const f = sx && sy ? Math.sqrt(fx * fy) : sx ? fx : fy; fx = fy = f; } // no per-axis size: uniform
+  // apply: per-axis -> dims; uniform -> the scale prop
+  let cxl, cyl; // new centre in local units (relative to the old centre)
+  if (g.dims && (fx !== fy || !corner || mode === 'free')) {
+    g.dims.set(Math.max(1, Math.round(g.w0 * fx)), Math.max(1, Math.round(g.h0 * fy)));
+    writeProp(L, 'scale', S.t, s0); cxl = ax + (0 - ax) * fx; cyl = ay + (0 - ay) * fy;
+  } else {
+    if (g.dims) g.dims.set(g.w0, g.h0);
+    writeProp(L, 'scale', S.t, +Math.max(0.01, s0 * fx).toFixed(4)); cxl = ax * (1 - fx); cyl = ay * (1 - fy);
+  }
+  const c = Math.cos(rot), sn = Math.sin(rot), wx = (cxl * c - cyl * sn) * s0, wy = (cxl * sn + cyl * c) * s0;
+  writeProp(L, 'x', S.t, +(g.x0 + wx).toFixed(2)); writeProp(L, 'y', S.t, +(g.y0 + wy).toFixed(2));
+  g.moved = true;
+}
+function setSizeMode(m) {
+  S.sizeMode = m; localStorage.setItem('kntc.sizeMode', m); renderSizeModes();
+  const badge = $('#modeBadge'); badge.textContent = SIZE_MODES.find(x => x[0] === m)[1];
+  badge.classList.remove('show'); void badge.offsetWidth; badge.classList.add('show'); clearTimeout(badge._t); badge._t = setTimeout(() => badge.classList.remove('show'), 1200);
+}
+function renderSizeModes() {
+  const box = $('#sizeModes'); if (!box) return;
+  const L = selLayer(), show = !!(L && visualLayer(L) && !['draw', 'points', 'project'].includes(S.tab) && !S.full);
+  box.hidden = !show;
+  if (!box.firstChild) box.append(...SIZE_MODES.map(([m, label, ic]) => h('button', { class: 'szm', 'data-mode': m, title: label, 'aria-label': label, 'data-testid': 'size-mode-' + m, onclick: () => setSizeMode(m) }, icon(ic))));
+  for (const b of box.children) b.classList.toggle('on', b.dataset.mode === S.sizeMode);
 }
 
 function stagePoint(e) { const r = stage.getBoundingClientRect(); return [(e.clientX - r.left) / viewScale, (e.clientY - r.top) / viewScale]; }
@@ -303,7 +465,7 @@ stage.addEventListener('pointerdown', e => {
     drawFrame(); renderPanel(); return;
   }
   if (S.tab === 'points' || S.tab === 'draw') return;
-  if (ptrs.size === 2 && L) {
+  if (ptrs.size === 2 && L && !VP.pinch) {
     const [a, b] = [...ptrs.values()];
     gesture = { mode: 'pinch', L, d0: Math.hypot(b[0] - a[0], b[1] - a[1]), a0: Math.atan2(b[1] - a[1], b[0] - a[0]), s0: valueAt(L, 'scale', S.t), r0: valueAt(L, 'rotation', S.t) };
     return;
@@ -312,12 +474,14 @@ stage.addEventListener('pointerdown', e => {
   if (L && L.type !== 'adjust' && L.type !== 'audio' && S.t >= L.start && S.t < L.end) {
     const g = layerCorners(L), tol = 22 / viewScale;
     if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: Math.atan2(py - g.tr.y, px - g.tr.x) }; return; }
-    if (Math.hypot(px - g.corners[2][0], py - g.corners[2][1]) < tol) { gesture = { mode: 'scale', L, s0: valueAt(L, 'scale', S.t), d0: Math.hypot(px - g.tr.x, py - g.tr.y) }; return; }
+    const hs = [...g.corners, ...g.mids], hi = hs.map((q, i) => [Math.hypot(px - q[0], py - q[1]), i]).filter(([d]) => d < tol).sort((a, b) => a[0] - b[0])[0];
+    if (hi) { gesture = startHandle(L, hi[1], px, py); return; }
   }
   const hit = hitTest(px, py);
   if (hit) {
     if (hit.id !== S.sel) selectLayer(hit.id);
     gesture = { mode: 'move', L: hit, x0: valueAt(hit, 'x', S.t), y0: valueAt(hit, 'y', S.t), px, py, moved: false };
+    gesture.snap0 = { L: hit, x: gesture.x0, y: gesture.y0 };
   } else gesture = S.sel ? { mode: 'tap', x: e.clientX, y: e.clientY, t0: performance.now() } : null; // deselect on release if it stays a short tap
   drawOverlay();
 });
@@ -334,11 +498,11 @@ stage.addEventListener('pointermove', e => {
   }
   if (gesture.mode === 'point') { L.shape.pts[gesture.i] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
   if (gesture.mode === 'move') {
-    let nx = gesture.x0 + px - gesture.px, ny = gesture.y0 + py - gesture.py;
-    const snap = 10 / viewScale;
-    if (Math.abs(nx - P().w / 2) < snap) nx = P().w / 2;
-    if (Math.abs(ny - P().h / 2) < snap) ny = P().h / 2;
-    writeProp(L, 'x', S.t, Math.round(nx)); writeProp(L, 'y', S.t, Math.round(ny)); gesture.moved = true;
+    if (!gesture.moved && Math.hypot(px - gesture.px, py - gesture.py) * viewScale < 2) return;
+    const sn = snapMove(L, gesture.x0 + px - gesture.px, gesture.y0 + py - gesture.py);
+    S.guides = sn.guides;
+    writeProp(L, 'x', S.t, +sn.nx.toFixed(2)); writeProp(L, 'y', S.t, +sn.ny.toFixed(2)); gesture.moved = true;
+  } else if (gesture.mode === 'handle') { moveHandle(gesture, px, py);
   } else if (gesture.mode === 'rotate') {
     const tr = evalTransform(L, S.t), a = Math.atan2(py - tr.y, px - tr.x);
     let r = gesture.r0 + (a - gesture.a0) * 180 / Math.PI; if (e.shiftKey) r = Math.round(r / 15) * 15;
@@ -357,7 +521,7 @@ stage.addEventListener('pointermove', e => {
 const endPtr = e => {
   ptrs.delete(e.pointerId);
   if (gesture?.mode === 'tap') { const g = gesture; gesture = null; if (e.type === 'pointerup' && ptrs.size === 0 && isTap(g, e)) deselect(); return; }
-  if (gesture && ptrs.size === 0) { if (gesture.moved || gesture.mode === 'stroke') commit(); gesture = null; }
+  if (gesture && ptrs.size === 0) { const g = gesture; gesture = null; const hadGuides = S.guides.length; S.guides = []; if (g.moved || g.mode === 'stroke') commit(); else if (hadGuides) drawFrame(); }
 };
 stage.addEventListener('pointerup', endPtr); stage.addEventListener('pointercancel', endPtr);
 
@@ -379,8 +543,10 @@ function loop(ts) {
 }
 function seek(t) {
   S.t = Math.max(0, Math.min(P().duration, t));
-  drawFrame(); syncScroll(); updateTC(); renderPanelIfTime(); updateHeader();
+  drawFrame(); syncScroll(); updateTC(); renderPanelIfTime(); updateHeader(); updKfNav();
 }
+let kfNavRaf = 0;
+function updKfNav() { if (kfNavRaf) return; kfNavRaf = requestAnimationFrame(() => { kfNavRaf = 0; if (!P()) return; const ks = keyTimes(); $('#btnKPrev').disabled = !ks.some(t => t < S.t - 1e-4); $('#btnKNext').disabled = !ks.some(t => t > S.t + 1e-4); }); }
 let panelTimer;
 function renderPanelIfTime() { if (['layer', 'ease', 'blend'].includes(S.tab)) { clearTimeout(panelTimer); panelTimer = setTimeout(renderPanel, 60); } }
 
@@ -393,7 +559,20 @@ function updateTransport() {
   $('#btnPlay').classList.toggle('on', S.playing);
   $('#btnUndo').disabled = !history.canUndo(); $('#btnRedo').disabled = !history.canRedo();
   $('#btnFit').classList.toggle('on', S.full);
+  const ks = keyTimes(); $('#btnKPrev').disabled = !ks.some(t => t < S.t - 1e-4); $('#btnKNext').disabled = !ks.some(t => t > S.t + 1e-4);
   updateTC();
+}
+// keyframe times of the selected layer (or of every layer when nothing is selected)
+function keyTimes() {
+  const p = P(); if (!p) return [];
+  const ls = selLayer() ? [selLayer()] : p.layers, ts = new Set();
+  for (const L of ls) for (const { k } of allKeys(L)) ts.add(+k.t.toFixed(4));
+  return [...ts].sort((a, b) => a - b);
+}
+function jumpKey(dir) {
+  const ks = keyTimes(), t = dir < 0 ? [...ks].reverse().find(x => x < S.t - 1e-4) : ks.find(x => x > S.t + 1e-4);
+  if (t == null) return toast(dir < 0 ? 'No earlier keyframe' : 'No later keyframe');
+  seek(t); updateTransport();
 }
 const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
 const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
@@ -437,7 +616,7 @@ function onTlScroll() {
   if (S.t >= dur - 1e-9 && tl.scrollLeft > want) return; // panned past the end: the playhead stays at the end
   S.t = Math.max(0, Math.min(dur, tl.scrollLeft / S.pps));
   updateTC();
-  if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; drawFrame(); updateHeader(); renderPanelIfTime(); });
+  if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; drawFrame(); updateHeader(); renderPanelIfTime(); updKfNav(); });
 }
 const viewT = () => Math.max(1, tl.clientWidth) / S.pps; // one screen of time
 function contentEnd(p = P()) {
@@ -1002,11 +1181,63 @@ function panelStyle(L) {
   else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no fill — add effects; they apply to everything below.'));
   return out;
 }
+// ---- Alight "Size" ruler: a horizontally scrolling scale under a fixed green centre tick (swipe anywhere on it) ----
+// value moves under the tick: 8px per minor step, labels every 5 steps; X / Y number boxes on the right
+function rulerSlider({ label, value, min, max, step = 10, onInput, onChange, right, testid }) {
+  const PX = 8 / step; // css px per unit
+  const cv = h('canvas', { class: 'rs-cv' }), val = h('b', { class: 'rs-val', 'data-testid': testid ? testid + '-value' : null });
+  const track = h('div', { class: 'rs-track', 'data-testid': testid }, cv, h('i', { class: 'rs-tick' }));
+  let v = value;
+  const draw = () => {
+    const w = track.clientWidth, hh = track.clientHeight; if (!w) return;
+    const dpr = Math.min(3, devicePixelRatio || 1); if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
+    const c = w / 2, first = Math.floor((v - c / PX) / step) * step;
+    g.font = '600 10px ' + getComputedStyle(document.body).fontFamily; g.textAlign = 'center'; g.fillStyle = '#7c7f91'; g.strokeStyle = '#5a5e72';
+    for (let u = first; u <= v + c / PX + step; u += step) {
+      if (u < min - 1e-9 || u > max + 1e-9) continue;
+      const x = c + (u - v) * PX, major = Math.round(u / step) % 5 === 0;
+      g.lineWidth = 1; g.beginPath(); g.moveTo(Math.round(x) + .5, major ? 8 : 13); g.lineTo(Math.round(x) + .5, 22); g.stroke();
+      if (major) g.fillText(String(Math.round(u)), x, hh - 3);
+    }
+    val.textContent = String(Math.round(v));
+  };
+  const set = (nv, fire) => { nv = Math.max(min, Math.min(max, nv)); if (nv === v) return; v = nv; draw(); if (fire) onInput?.(v); };
+  let drag = null;
+  track.addEventListener('pointerdown', e => { e.preventDefault(); track.setPointerCapture(e.pointerId); drag = { x: e.clientX, v0: v, moved: false, last: [{ x: e.clientX, t: performance.now() }] }; cancelAnimationFrame(track._mom); });
+  track.addEventListener('pointermove', e => {
+    if (!drag) return; const dx = e.clientX - drag.x; if (Math.abs(dx) > 2) drag.moved = true;
+    drag.last.push({ x: e.clientX, t: performance.now() }); if (drag.last.length > 5) drag.last.shift();
+    set(drag.v0 - dx / PX, true);
+  });
+  const end = () => {
+    if (!drag) return; const d = drag; drag = null; if (!d.moved) return;
+    const a = d.last[0], b = d.last[d.last.length - 1], vel = (b.x - a.x) / Math.max(16, b.t - a.t); // px/ms
+    let sp = -vel / PX * 16; // units per frame
+    const step_ = () => { if (Math.abs(sp) < 0.3) { onChange?.(v); return; } set(v + sp, true); sp *= 0.92; track._mom = requestAnimationFrame(step_); };
+    if (Math.abs(sp) > 1) track._mom = requestAnimationFrame(step_); else onChange?.(v);
+  };
+  track.addEventListener('pointerup', end); track.addEventListener('pointercancel', end);
+  new ResizeObserver(draw).observe(track);
+  const row = h('div', { class: 'rs' }, h('div', { class: 'rs-head' }, h('label', {}, label), val, h('span', { class: 'sp' }), right || ''), track);
+  row.set = nv => { v = nv; draw(); };
+  requestAnimationFrame(draw);
+  return row;
+}
 function panelEdit(L) {
   const out = h('div', {}), { N } = fieldMakers(L);
   const big = Math.max(P().w, P().h) * 1.5;
   if (L.type === 'shape') {
     const s = L.shape;
+    // Size ruler (keeps the aspect) + X / Y boxes on the right
+    const xy = (k, tid) => { const i = h('input', { type: 'number', class: 'num rs-num', min: 1, max: big, step: 1, value: Math.round(s[k]), inputmode: 'numeric', 'data-testid': tid });
+      i.onchange = () => { const v = Math.max(1, Math.min(big, Math.round(+i.value) || 1)); s[k] = v; commit(); }; return i; };
+    const nx = xy('w', 'size-x'), ny = xy('h', 'size-y');
+    const ar = s.h / (s.w || 1);
+    const size = rulerSlider({ label: 'Size', value: Math.round(s.w), min: 1, max: big, step: 10, testid: 'size-ruler',
+      onInput: v => { s.w = Math.round(v); s.h = Math.max(1, Math.round(v * ar)); nx.value = s.w; ny.value = s.h; drawFrame(); }, onChange: () => { commit({ silent: true }); renderTimeline(); },
+      right: h('span', { class: 'rs-xy' }, h('em', {}, 'X'), nx, h('em', {}, 'Y'), ny) });
+    out.append(section('Size', size));
     out.append(section('Shape', chips(SHAPE_KINDS.map(k => [k, k]), s.kind, v => { s.kind = v; commit(); }),
       N('Width', s, 'w', 1, big), N('Height', s, 'h', 1, big),
       s.kind === 'rect' ? N('Corner', s, 'radius', 0, 600) : null,
@@ -1671,6 +1902,64 @@ function openCreate() {
   root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
 }
 
+// ---- editor gear: Project Settings sheet, styled like the Create sheet; every change applies straight away ----
+function openProjectSheet() {
+  if (dlg.open) dlg.close();
+  closeLayerMenu(); closeCopyMenu();
+  const p = P(), root = $('#create');
+  const isStd = a => CREATE_RATIOS.some(r => r[0] === a);
+  const [cw0, ch0] = isStd(p.aspect) ? [2, 1] : (() => { const g = (a, b) => (b ? g(b, a % b) : a), d = g(p.w, p.h); return [p.w / d, p.h / d]; })();
+  const st = { cw: Math.min(99, cw0), ch: Math.min(99, ch0) };
+  const sizeTx = h('small', { 'data-testid': 'proj-size' });
+  const updSize = () => sizeTx.replaceChildren('Composition Size', h('br'), `${P().w} × ${P().h}`);
+  const name = h('input', { class: 'cr-name', value: p.name, 'aria-label': 'Project name', 'data-testid': 'proj-sheet-name', maxlength: 60, spellcheck: 'false' });
+  name.onchange = () => { P().name = name.value.trim() || 'Untitled'; commit(); };
+  const num = (v, tid, on) => { const i = h('input', { type: 'number', min: 1, max: 99, value: v, inputmode: 'numeric', 'data-testid': tid }); i.onchange = () => { on(Math.max(1, Math.min(99, Math.round(+i.value) || 1))); applyCustom(); }; return i; };
+  const applyCustom = () => { changeAspect(`${st.cw}:${st.ch}`); updSize(); };
+  const custom = h('div', { class: 'cr-custom', hidden: isStd(p.aspect), 'data-testid': 'proj-custom' }, h('span', {}, 'Custom ratio'),
+    num(st.cw, 'proj-custom-w', n => (st.cw = n)), h('b', {}, ':'), num(st.ch, 'proj-custom-h', n => (st.ch = n)));
+  const ratioBtns = [];
+  const mark = a => ratioBtns.forEach(b => b.classList.toggle('on', b.dataset.a === a));
+  const pickRatio = a => { mark(a); custom.hidden = a !== 'custom'; if (a === 'custom') applyCustom(); else if (a !== P().aspect) changeAspect(a); updSize(); };
+  const ratios = h('div', { class: 'cr-ratios' },
+    CREATE_RATIOS.map(([a, w, hh]) => { const b = h('button', { class: 'cr-ratio', 'data-a': a, 'data-testid': 'aspect-' + a, style: { width: w + 'px', height: hh + 'px' }, onclick: () => pickRatio(a) }, h('span', {}, a)); ratioBtns.push(b); return b; }),
+    (() => { const b = h('button', { class: 'cr-ratio cr-pen', 'data-a': 'custom', title: 'Custom ratio', 'aria-label': 'Custom ratio', 'data-testid': 'aspect-custom', onclick: () => pickRatio('custom') }, icon('pencil')); ratioBtns.push(b); return b; })());
+  const dd = (tid, value, options, onChange, lead) => {
+    const sel = h('select', { 'data-testid': tid }, options.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t)));
+    sel.onchange = () => onChange(sel.value, sel);
+    return h('label', { class: 'cr-dd' }, lead || '', sel, icon('chevd'));
+  };
+  const short = Math.min(p.w, p.h), resOpts = RESOLUTIONS.map(([v, t]) => [String(v), t]).concat(RESOLUTIONS.some(r => r[0] === short) ? [] : [[String(short), short + 'p']]);
+  const sw = h('i', { class: 'cr-sw', style: { background: p.bg } });
+  const bgPick = h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(p.bg) ? p.bg : '#000000', hidden: true, 'data-testid': 'proj-bg-color' });
+  const known = BG_PRESETS.some(b => b[0] === p.bg);
+  const bgDD = dd('proj-bg', known ? p.bg : 'custom', [...BG_PRESETS, ['custom', known ? 'Custom…' : 'Custom ' + p.bg]], (v, sel) => {
+    if (v === 'custom') { bgPick.click(); return; }
+    P().bg = v; sw.style.background = v; commit();
+  }, sw);
+  bgPick.oninput = () => { P().bg = bgPick.value; sw.style.background = bgPick.value; layoutStage(); drawFrame(); const sel = bgDD.querySelector('select'); sel.querySelector('option[value=custom]').textContent = 'Custom ' + bgPick.value; sel.value = 'custom'; };
+  bgPick.onchange = () => commit();
+  const row = (label, sub, ctl) => h('div', { class: 'cr-row' }, h('div', { class: 'cr-lab' }, h('b', {}, label), sub || ''), ctl);
+  const close = () => { root.classList.remove('show'); setTimeout(() => { if (!root.classList.contains('show')) root.hidden = true; }, 220); };
+  const dur = h('input', { type: 'number', class: 'cr-num', min: 0.5, max: 600, step: 0.5, value: p.duration, 'data-testid': 'duration', inputmode: 'decimal' });
+  dur.onchange = () => { const v = Math.max(0.5, Math.min(600, +dur.value || p.duration)); P().duration = v; S.t = Math.min(S.t, v); commit(); };
+  const act = (ic, label, tid, fn) => h('button', { class: 'cr-act', 'data-testid': tid, onclick: fn }, icon(ic), h('span', {}, label));
+  root.replaceChildren(h('div', { class: 'cr-dim', onclick: close }),
+    h('div', { class: 'cr-sheet', role: 'dialog', 'aria-label': 'Project Settings', 'data-testid': 'project-sheet' },
+      h('div', { class: 'cr-head' }, h('button', { class: 'cr-x', title: 'Close', 'aria-label': 'Close', 'data-testid': 'proj-close', onclick: close }, icon('close')), h('h2', {}, 'Project Settings')),
+      h('div', { class: 'cr-body' },
+        h('div', { class: 'cr-namerow first' }, name), ratios, custom,
+        row('Resolution', sizeTx, dd('proj-res', String(short), resOpts, v => { changeResolution(+v); updSize(); })),
+        row('Frame Rate', '', dd('proj-fps', p.fps, [24, 25, 30, 48, 50, 60].map(f => [f, f + ' fps']), v => { P().fps = +v; commit(); })),
+        row('Background', '', bgDD), bgPick,
+        row('Duration', h('small', {}, 'seconds'), dur),
+        h('div', { class: 'cr-acts' },
+          act('menu', 'Projects', 'open-projects', () => { close(); openProjects(); }), act('plus', 'New', 'new-project', () => openCreate()),
+          act('export', 'Save JSON', 'export-json', exportJSON), act('up', 'Load JSON', 'import-json', () => $('#fileJson').click()), act('image', 'Frame PNG', 'export-png', exportPNG)))));
+  mark(isStd(p.aspect) ? p.aspect : 'custom'); updSize();
+  root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
+}
+
 // ---------------- dialogs ----------------
 const dlg = $('#dlg');
 function openDialog(title, body) {
@@ -1758,11 +2047,13 @@ function buildChrome() {
   const ic = (id, n) => $(id).replaceChildren(icon(n));
   ic('#btnBack', 'back'); ic('#btnSettings', 'gear'); ic('#btnExport', 'share'); ic('#btnDup', 'dup'); ic('#btnDel', 'trash'); ic('#btnMore', 'more');
   ic('#btnKey', 'key'); ic('#btnPtAdd', 'pluscircle');
+  ic('#btnZoom', 'zoom'); $('#zoomHud .zi').replaceWith(icon('zoom')); ic('#btnKPrev', 'kfprev'); ic('#btnKNext', 'kfnext');
+  $('#btnZoom').onclick = resetZoom; $('#btnKPrev').onclick = () => jumpKey(-1); $('#btnKNext').onclick = () => jumpKey(1);
   ic('#btnUndo', 'undo'); ic('#btnRedo', 'redo'); ic('#btnStart', 'start'); ic('#btnEnd', 'end'); ic('#btnCopy', 'copy'); ic('#btnFit', 'fit');
   ic('#fab', 'plus'); ic('#homeMenu', 'burger'); ic('#homeAvatar', 'user'); ic('#homeNew', 'plus'); ic('#homeBannerX', 'close');
   document.querySelectorAll('#home [data-ic]').forEach(e => e.replaceWith(icon(e.dataset.ic)));
   $('#btnBack').onclick = goBack;
-  $('#btnSettings').onclick = () => openSub('project');
+  $('#btnSettings').onclick = openProjectSheet;
   $('#btnExport').onclick = openExport;
   $('#btnDup').onclick = () => duplicateLayer(selLayer());
   $('#btnDel').onclick = () => deleteLayer(selLayer());
@@ -1813,7 +2104,7 @@ function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
-  buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap();
+  buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap(); bindPreviewZoom();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
   if (!p) p = demoProject('9:16');
@@ -1822,6 +2113,8 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect,
-    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store };
+    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom,
+    handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
+      return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }
 boot();

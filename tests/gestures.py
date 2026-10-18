@@ -74,7 +74,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v9', "'kntc-v9'" in sw)
+        check('service worker cache bumped to kntc-v10', "'kntc-v10'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4):
@@ -337,7 +337,24 @@ def main():
         touch('touchStart', [(ex, ey)]); pg.wait_for_timeout(700); touch('touchEnd', []); pg.wait_for_timeout(150); a2 = P('__app.S.sel')
         sc0 = P('__app.project.layers[0].props.scale')
         gesture([(ex - 40, ey - 40, ex - 70, ey - 70), (ex, ey, ex + 20, ey + 20)], steps=10, dt=16); pg.wait_for_timeout(150); a3 = P('__app.S.sel'); sc1 = P('__app.project.layers[0].props.scale')
-        check('canvas: swipe, long press and pinch on empty canvas keep the selection (pinch still scales)', a1 == lid and a2 == lid and a3 == lid and sc1 != sc0, (a1, a2, a3, sc0, sc1))
+        vz1 = P('[__app.S.vz.k, document.getElementById("zoomHud").classList.contains("show"), document.querySelector("#zoomHud b").textContent]')
+        check('canvas: swipe, long press and pinch on empty canvas keep the selection', a1 == lid and a2 == lid and a3 == lid, (a1, a2, a3))
+        check('canvas: a pinch away from the selected layer zooms the preview (layer untouched) and shows the % HUD', vz1[0] > 1.3 and sc1 == sc0 and vz1[1] and vz1[2] == f'{round(vz1[0] * 100)}%', (vz1, sc0, sc1))
+        # one-finger drag on empty canvas while zoomed pans the view (and keeps the selection)
+        st0 = P('[__app.S.vz.x, __app.S.vz.y]'); bx = P("(() => { const r = document.getElementById('stageWrap').getBoundingClientRect(); return [r.left + 30, r.bottom - 30]; })()")
+        gesture([(bx[0], bx[1], bx[0] + 60, bx[1] - 40)], steps=10, dt=16); pg.wait_for_timeout(120); st1 = P('[__app.S.vz.x, __app.S.vz.y]')
+        check('canvas: one-finger drag pans the zoomed preview', abs(st1[0] - st0[0] - 60) < 2 and abs(st1[1] - st0[1] + 40) < 2 and P('__app.S.sel') == lid, (st0, st1))
+        P('__app.resetZoom()'); pg.wait_for_timeout(100)
+        # pinch with a finger on the selected layer still scales the layer (no view zoom)
+        sb2 = P("(() => { const r = document.getElementById('stage').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()")
+        gesture([(sb2[0], sb2[1], sb2[0] - 10, sb2[1] - 10), (sb2[0] + 60, sb2[1] + 60, sb2[0] + 110, sb2[1] + 110)], steps=10, dt=16); pg.wait_for_timeout(150)
+        check('canvas: a pinch on the selected layer scales the layer, not the view', P('__app.project.layers[0].props.scale') != sc0 and P('__app.S.vz.k') == 1, (sc0, P('__app.project.layers[0].props.scale'), P('__app.S.vz.k')))
+        P("__app.project.layers[0].props.scale = " + str(sc0) + "; __app.commit()"); pg.wait_for_timeout(80)
+        # nothing selected: a pinch anywhere on the preview zooms the view
+        P('__app.deselect()'); pg.wait_for_timeout(80)
+        gesture([(sb2[0], sb2[1], sb2[0] - 30, sb2[1] - 30), (sb2[0] + 40, sb2[1] + 40, sb2[0] + 90, sb2[1] + 90)], steps=10, dt=16); pg.wait_for_timeout(150)
+        check('canvas: with nothing selected a pinch over a layer zooms the view', P('__app.S.vz.k') > 1.3 and P('__app.S.sel') is None, P('__app.S.vz.k'))
+        pg.click('[data-testid=zoom-fit]'); pg.wait_for_timeout(100); reselect()
         tap(ex, ey); check('canvas: a short tap on empty canvas deselects', P('__app.S.sel') is None and P("document.body.dataset.mode") == 'none')
         reselect(); cx, cy = sb['x'] + sb['w'] / 2, sb['y'] + sb['h'] / 2
         tap(cx, cy); check('canvas: tapping the layer keeps it selected', P('__app.S.sel') == lid)

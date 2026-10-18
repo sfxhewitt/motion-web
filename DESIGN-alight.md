@@ -75,8 +75,8 @@ Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and 
 ## Knowingly different
 - Name, logo, icons and shape set are KINETIC's own; no watermark, music or template library.
 - Camera, Empty Group, Null, Elements, Templates browse, Speed and Smudge are "coming soon" toasts.
-- Edit Points is simplified (straight segments, no bezier handles); no preview zoom (magnifier) button.
-- Selection overlay keeps a rotate handle + square scale handle (Alight shows only dots).
+- Edit Points is simplified (straight segments, no bezier handles).
+- Edge handles on text / solid / drawing layers scale uniformly (those layers have no per-axis size).
 - Keyframe easing editor (bezier) is KINETIC's own.
 
 ## Home screen & Create sheet (v7, LIGHT theme — matched to `reference/10-home.jpg`, `11-create.jpg`)
@@ -120,3 +120,17 @@ dividers, 26pt outline icons (dotted squares = clipboard), 17pt labels, disabled
 Select All Layers (multi-select, clips outlined white) · Duplicate Layer · Copy Layer (including style) · Save Preset
 (→ Presets tile) · Paste Layer (on top) · Paste Style ▸ All / Fill / Border / Shadow / Effects / Blending / Opacity.
 Clipboard `kntc.clipboard` and presets `kntc.presets` live in localStorage.
+
+## Canvas (v10)
+- Selection box: 8 white round handles (corners + edge midpoints, r 6pt, soft dark rim) and a detached mint rotation knob
+  (r 8pt) 38pt below the bottom edge on a thin stem. Corners scale uniformly, edges scale one axis (shape w/h, path points,
+  media w/h). Mode toggles top right: Size from center (centre fixed) / Size from edge (opposite side fixed) / Resize Freely
+  (corners per axis, opposite corner fixed); tapping shows a badge with the mode name. Stored in `kntc.sizeMode`.
+- Magnetic snapping while dragging: centre / edges of the layer's box snap (8pt) to the composition centre / edges and to
+  other layers' edges and centres, drawing red `#ff2d55` full-span guides.
+- Preview zoom 25–800 % (pinch away from the selected layer, or anywhere when nothing is selected; ctrl+wheel on desktop),
+  one-finger pan while zoomed, HUD top left (magnifier + %, fades after 1.1 s), the surround shows the project background
+  while zoomed, the ⊕ magnifier button top left resets to fit.
+- Edit Shape: Size ruler (scrolling tick scale, 8pt per 10 units, labels every 50, mint centre tick, momentum) with X / Y boxes.
+- Gear: Project Settings sheet styled like Create (name, ratio chips, Resolution, Frame Rate, Background, Duration, project actions), X closes; changes apply at once.
+- Play bar: ◁◇ / ◇▷ previous / next keyframe buttons appear while a layer is selected.

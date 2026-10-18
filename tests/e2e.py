@@ -101,7 +101,8 @@ def run(pw, label, ctx_opts, mobile):
     pg.locator('[data-testid=home-project]', has_text='Neon Demo').locator('[data-testid=home-open]').click(); pg.wait_for_timeout(1000)
     def to_none():  # back out of sheet / sub panel / selection to the plain editor
         for _ in range(5):
-            if P("__app.S.tab") == 'add': pg.click('[data-testid=sheet-close]')
+            if P("!document.getElementById('create').hidden && !!document.querySelector('[data-testid=project-sheet]')"): pg.click('[data-testid=proj-close]'); pg.wait_for_timeout(280)
+            elif P("__app.S.tab") == 'add': pg.click('[data-testid=sheet-close]')
             elif P("document.body.dataset.mode") != 'none': pg.click('[data-testid=btn-back]')
             else: return
             pg.wait_for_timeout(60)
@@ -111,7 +112,7 @@ def run(pw, label, ctx_opts, mobile):
         pg.click(f'[data-testid=add-{kind}]'); pg.wait_for_timeout(100)
     def tab(t):  # open a property sub panel from the tile grid (or project settings from the gear)
         if P("__app.S.tab") == t: return
-        if t == 'project': to_none(); pg.click('[data-testid=tab-project]'); pg.wait_for_timeout(60); return
+        if t == 'project': to_none(); pg.click('[data-testid=tab-project]'); pg.wait_for_timeout(320); return
         if P("document.body.dataset.mode") == 'sub': pg.click('[data-testid=panel-back]'); pg.wait_for_timeout(60)
         pg.click(f'[data-testid=tab-{t}]'); pg.wait_for_timeout(60)
 
@@ -432,6 +433,106 @@ def run(pw, label, ctx_opts, mobile):
     pg.click('[data-testid=layer-more]'); pg.wait_for_timeout(150); pg.keyboard.press('Escape'); pg.wait_for_timeout(100)
     check(f'[{label}] Escape closes the ⋯ menu', pg.locator('[data-testid=layer-menu]').count() == 0 and sel() == A_)
     to_none()
+
+    # 21. v10: selection box (8 round handles + green rotation knob), size modes, magnetic snapping, preview zoom, Size ruler,
+    #     Project Settings sheet, eye toggle, prev/next keyframe
+    P("(() => { const a = __app, p = a.demoProject('9:16'); p.layers = []; p.bg = '#202020'; a.setProject(p); a.deselect(); })()"); pg.wait_for_timeout(150)
+    add('rect'); P("(() => { const L = __app.project.layers[0]; L.props.x = 400; L.props.y = 700; L.shape.w = 300; L.shape.h = 200; L.shape.radius = 0; L.shape.fill = '#0000ff'; L.name = 'R'; __app.commit(); })()"); pg.wait_for_timeout(150)
+    to_none(); P("__app.selectLayer(__app.project.layers[0].id)"); pg.wait_for_timeout(150)
+    hp = P("__app.handlePoints()")
+    OVPIX = """([x, y]) => { const o = document.getElementById('overlay'), r = o.getBoundingClientRect(), k = o.width / r.width; return [...o.getContext('2d').getImageData(Math.round((x - r.left) * k), Math.round((y - r.top) * k), 1, 1).data]; }"""
+    hpx = [pg.evaluate(OVPIX, q) for q in hp['corners'] + hp['mids']]; rpx = pg.evaluate(OVPIX, hp['rot'])
+    below = hp['rot'][1] > max(q[1] for q in hp['corners']) + 15
+    check(f'[{label}] selection box: 8 white circular handles + a detached green rotation knob below the box', all(q[0] > 230 and q[1] > 230 and q[2] > 230 and q[3] > 200 for q in hpx) and rpx[1] > 200 and rpx[0] < 60 and below, (hpx[:2], rpx, below))
+    LS = "(() => { const L = __app.project.layers[0]; return [L.props.x, L.props.y, +L.props.scale.toFixed(3), L.shape.w, L.shape.h, +L.props.rotation.toFixed(1)]; })()"
+    def drag(a, b, steps=8):
+        pg.mouse.move(*a); pg.mouse.down(); pg.mouse.move(*b, steps=steps); pg.mouse.up(); pg.wait_for_timeout(120)
+    vs = hp['viewScale']
+    pg.click('[data-testid=size-mode-center]'); pg.wait_for_timeout(80)
+    bd = P("[document.getElementById('modeBadge').textContent, document.getElementById('modeBadge').classList.contains('show'), __app.S.sizeMode, getComputedStyle(document.getElementById('sizeModes')).display]")
+    check(f'[{label}] size-mode toggles (top right) show a badge with the mode name', bd[0] == 'Size from center' and bd[1] and bd[2] == 'center' and bd[3] != 'none', bd)
+    s0 = P(LS); drag(hp['mids'][1], [hp['mids'][1][0] + 30, hp['mids'][1][1]]); s1 = P(LS)
+    check(f'[{label}] Size from center: right edge handle scales only the width, centre stays', s1[3] > s0[3] + 80 and s1[4] == s0[4] and abs(s1[0] - s0[0]) < 0.6 and s1[2] == s0[2], (s0, s1))
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100); hp = P("__app.handlePoints()")
+    drag(hp['corners'][2], [hp['corners'][2][0] + 20, hp['corners'][2][1] + 14]); s2 = P(LS)
+    check(f'[{label}] Size from center: corner handle scales uniformly around the centre', s2[2] > s0[2] * 1.1 and s2[3:5] == s0[3:5] and abs(s2[0] - s0[0]) < 0.6 and abs(s2[1] - s0[1]) < 0.6, (s0, s2))
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    pg.click('[data-testid=size-mode-edge]'); pg.wait_for_timeout(80); hp = P("__app.handlePoints()")
+    drag(hp['mids'][1], [hp['mids'][1][0] + 30, hp['mids'][1][1]]); s3 = P(LS)
+    left0, left3 = s0[0] - s0[3] / 2, s3[0] - s3[3] / 2
+    check(f'[{label}] Size from edge: right edge handle grows the width with the left edge fixed', s3[3] > s0[3] + 80 and abs(left3 - left0) < 1 and s3[4] == s0[4], (s0, s3))
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    pg.click('[data-testid=size-mode-free]'); pg.wait_for_timeout(80); hp = P("__app.handlePoints()")
+    drag(hp['corners'][2], [hp['corners'][2][0] + 30, hp['corners'][2][1] + 5]); s4 = P(LS)
+    tl0, tl4 = (s0[0] - s0[3] / 2, s0[1] - s0[4] / 2), (s4[0] - s4[3] / 2, s4[1] - s4[4] / 2)
+    check(f'[{label}] Resize Freely: corner changes width and height independently, opposite corner fixed', s4[3] - s0[3] > 2 * (s4[4] - s0[4]) > 0 and abs(tl4[0] - tl0[0]) < 1 and abs(tl4[1] - tl0[1]) < 1, (s0, s4))
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100); pg.click('[data-testid=size-mode-center]'); pg.wait_for_timeout(60); hp = P("__app.handlePoints()")
+    drag(hp['rot'], [hp['rot'][0] + 60, hp['rot'][1] - 20]); s5 = P(LS)
+    check(f'[{label}] dragging the green knob rotates the layer', abs(s5[5]) > 10 and s5[3:5] == s0[3:5], (s0, s5))
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    # magnetic snapping with red full-span guides
+    hp = P("__app.handlePoints()"); c = hp['center']
+    W, H = P("[__app.project.w, __app.project.h]")
+    tx = c[0] + (W / 2 - s0[0]) * vs + 3; ty = c[1] + (H / 2 - s0[1]) * vs - 2
+    pg.mouse.move(*c); pg.mouse.down(); pg.mouse.move(tx, ty, steps=10); pg.wait_for_timeout(80)
+    gd = P("__app.S.guides.map(g => g.x != null ? 'x' + g.x : 'y' + g.y)")
+    ov = pg.locator('#overlay').bounding_box()
+    red = pg.evaluate(OVPIX, [ov['x'] + ov['width'] / 2, ov['y'] + 4])
+    pg.mouse.up(); pg.wait_for_timeout(100); s6 = P(LS)
+    check(f'[{label}] dragging near the composition centre snaps exactly, with red full-span guides', s6[0] == W / 2 and s6[1] == H / 2 and f'x{W / 2:g}' in gd and f'y{H / 2:g}' in gd and red[0] > 200 and red[1] < 90, (s6, gd, red))
+    check(f'[{label}] guides disappear on release', P("__app.S.guides.length") == 0)
+    P("(() => { const a = __app, p = a.project, B = a.makeLayer(p, 'shape', { kind: 'rect' }); B.props.x = 200; B.props.y = 300; B.shape.w = 100; B.shape.h = 100; B.name = 'B'; p.layers.push(B); a.commit(); a.selectLayer(p.layers[0].id); })()"); pg.wait_for_timeout(120)
+    hp = P("__app.handlePoints()"); c = hp['center']; Lw = P("__app.project.layers[0].shape.w")
+    want_cx = 150 + Lw / 2; tx = c[0] + (want_cx - W / 2) * vs + 3; ty = c[1] + 200 * vs
+    pg.mouse.move(*c); pg.mouse.down(); pg.mouse.move(tx, ty, steps=10); gd2 = P("__app.S.guides.map(g => g.x != null ? 'x' + g.x : 'y' + g.y)"); pg.mouse.up(); pg.wait_for_timeout(100)
+    check(f'[{label}] snapping also catches other layers’ edges', abs(P("__app.project.layers[0].props.x") - want_cx) < 0.01 and 'x150' in gd2, (P("__app.project.layers[0].props.x"), want_cx, gd2))
+    # preview zoom: ctrl+wheel (pinch is covered in gestures.py), HUD %, outside shows the project background, magnifier resets
+    wr = pg.locator('#stageWrap').bounding_box()
+    pg.mouse.move(wr['x'] + wr['width'] * 0.5, wr['y'] + wr['height'] * 0.5)
+    pg.keyboard.down('Control'); pg.mouse.wheel(0, -40); pg.keyboard.up('Control'); pg.wait_for_timeout(120)
+    z = P("[__app.S.vz.k, document.getElementById('zoomHud').classList.contains('show'), document.querySelector('#zoomHud b').textContent, getComputedStyle(document.getElementById('stageWrap')).backgroundColor, !!document.querySelector('#zoomHud .ico')]")
+    check(f'[{label}] zoom gesture zooms the preview; HUD (magnifier + %) at the top left; outside shows the project background', z[0] > 1.08 and z[1] and z[2] == f'{round(z[0] * 100)}%' and z[3] == 'rgb(32, 32, 32)' and z[4], z)
+    pg.wait_for_timeout(1600); check(f'[{label}] zoom HUD fades out', not P("document.getElementById('zoomHud').classList.contains('show')"))
+    pg.click('[data-testid=zoom-fit]'); pg.wait_for_timeout(100)
+    check(f'[{label}] the magnifier button resets the preview to fit', P("[__app.S.vz.k, __app.S.vz.x, __app.S.vz.y]") == [1, 0, 0] and P("document.querySelector('#zoomHud b').textContent") == '100%')
+    # Size ruler in Edit Shape
+    tab('edit'); pg.wait_for_timeout(200)
+    rl = P("(() => { const t = document.querySelector('[data-testid=size-ruler]'), r = t.getBoundingClientRect(), tk = t.querySelector('.rs-tick'); return { x: r.left, y: r.top + r.height / 2, w: r.width, tick: getComputedStyle(tk).backgroundColor, tl: tk.getBoundingClientRect().left + 1 - (r.left + r.width / 2), X: document.querySelector('[data-testid=size-x]').value, Y: document.querySelector('[data-testid=size-y]').value }; })()")
+    w0, h0 = P("[__app.project.layers[0].shape.w, __app.project.layers[0].shape.h]")
+    drag([rl['x'] + rl['w'] * 0.3, rl['y']], [rl['x'] + rl['w'] * 0.3 - 80, rl['y'] + 2], steps=10); pg.wait_for_timeout(700)
+    w1, h1 = P("[__app.project.layers[0].shape.w, __app.project.layers[0].shape.h]")
+    xy = P("[document.querySelector('[data-testid=size-x]').value, document.querySelector('[data-testid=size-y]').value, document.querySelector('[data-testid=size-ruler-value]').textContent]")
+    check(f'[{label}] Edit Shape: Size ruler (green centre tick): swiping left grows the size, X/Y follow, aspect kept', rl['tick'] == 'rgb(0, 255, 168)' and abs(rl['tl']) < 1.5 and rl['X'] == str(round(w0)) and w1 >= w0 + 95
+          and abs(h1 / w1 - h0 / w0) < 0.01 and xy[0] == str(w1) and xy[1] == str(h1) and xy[2] == str(w1), (rl, w0, w1, h0, h1, xy))
+    if mobile: pg.screenshot(path=f'{SHOTS}/{label}-17-size-ruler.png')
+    to_none()
+    # Project Settings sheet from the gear
+    pg.click('[data-testid=tab-project]'); pg.wait_for_timeout(320)
+    ps = P("(() => { const sh = document.querySelector('[data-testid=project-sheet]'); return sh && { title: sh.querySelector('h2').textContent, rows: [...sh.querySelectorAll('.cr-lab b')].map(b => b.textContent), ratios: sh.querySelectorAll('.cr-ratio').length, on: sh.querySelector('.cr-ratio.on')?.dataset.a, x: !!sh.querySelector('[data-testid=proj-close]') }; })()")
+    check(f'[{label}] gear opens a Project Settings sheet like Create (ratio chips, Resolution, Frame Rate, Background, X)', ps and ps['title'] == 'Project Settings' and ps['rows'][:3] == ['Resolution', 'Frame Rate', 'Background'] and ps['ratios'] >= 6 and ps['on'] == '9:16' and ps['x'], ps)
+    if mobile: pg.screenshot(path=f'{SHOTS}/{label}-18-project-settings.png')
+    pg.select_option('[data-testid=proj-fps]', '60'); pg.select_option('[data-testid=proj-res]', '720'); pg.select_option('[data-testid=proj-bg]', '#ffffff'); pg.wait_for_timeout(120)
+    pg.click('[data-testid="aspect-1:1"]'); pg.wait_for_timeout(120)
+    pr2 = P("[__app.project.fps, __app.project.w, __app.project.h, __app.project.bg, __app.project.aspect]")
+    pg.click('[data-testid=proj-close]'); pg.wait_for_timeout(300)
+    check(f'[{label}] Project Settings changes apply (fps, resolution, background, ratio) and X closes', pr2 == [60, 720, 720, '#ffffff', '1:1'] and P("document.getElementById('create').hidden"), pr2)
+    for _ in range(4): pg.click('[data-testid=undo]'); pg.wait_for_timeout(90)
+    # eye toggle: slash icon + the layer vanishes from the preview
+    to_none(); P("(() => { const L = __app.project.layers[0]; L.props.x = __app.project.w / 2; L.props.y = __app.project.h / 2; L.props.rotation = 0; __app.commit(); })()"); pg.wait_for_timeout(150)
+    before = pg.evaluate(PIX, [0.5, 0.5]); eye = pg.locator('.tl-row[data-layer] [data-testid=vis]').first
+    eye.click(); pg.wait_for_timeout(150)
+    after = pg.evaluate(PIX, [0.5, 0.5]); slash = P("(() => { const b = document.querySelector('.tl-row[data-layer] [data-testid=vis]'); return [b.classList.contains('off'), b.innerHTML.includes('M3 3l18 18')]; })()")
+    check(f'[{label}] eye toggle: hidden layer shows a slashed eye and disappears from the preview', before[2] > 200 and after[2] < 60 and slash == [True, True] and P("__app.project.layers[0].visible") is False, (before, after, slash))
+    eye.click(); pg.wait_for_timeout(120)
+    # prev / next keyframe in the play bar
+    P("(() => { const a = __app, L = a.project.layers[0]; L.keys = {}; L.keys.x = [{ id: 'k1', t: 0.5, v: 300 }, { id: 'k2', t: 2, v: 600 }]; L.keys.scale = [{ id: 'k3', t: 3, v: 1 }]; a.commit(); a.selectLayer(L.id); a.seek(1); })()"); pg.wait_for_timeout(150)
+    kv = P("[!!document.querySelector('[data-testid=kf-prev]').offsetParent, !!document.querySelector('[data-testid=kf-next]').offsetParent]")
+    pg.click('[data-testid=kf-next]'); pg.wait_for_timeout(80); t1 = P('__app.S.t'); pg.click('[data-testid=kf-next]'); pg.wait_for_timeout(80); t2 = P('__app.S.t')
+    pg.wait_for_timeout(60); dis = P("document.querySelector('[data-testid=kf-next]').disabled")
+    pg.click('[data-testid=kf-prev]'); pg.wait_for_timeout(80); pg.click('[data-testid=kf-prev]'); pg.wait_for_timeout(80); t3 = P('__app.S.t')
+    check(f'[{label}] play bar prev/next keyframe buttons jump between the selected layer’s keyframes', kv == [True, True] and abs(t1 - 2) < 1e-6 and abs(t2 - 3) < 1e-6 and dis and abs(t3 - 0.5) < 1e-6, (kv, t1, t2, dis, t3))
+    to_none()
+    check(f'[{label}] prev/next keyframe buttons hide with nothing selected', P("!document.querySelector('[data-testid=kf-prev]').offsetParent"))
 
     # PWA bits
     man = pg.evaluate("fetch('manifest.webmanifest').then(r => r.json())")
