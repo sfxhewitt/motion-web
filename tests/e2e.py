@@ -338,6 +338,101 @@ def run(pw, label, ctx_opts, mobile):
     check(f'[{label}] audio import as a layer', aok and abs(P("__app.project.layers[0].media.duration") - 1.5) < 0.1)
     to_none()
 
+    # 18. tap on empty space deselects (canvas outside layers, dark surround, empty timeline); pans / long presses don't
+    def tapat(x, y):
+        if mobile: pg.touchscreen.tap(x, y)
+        else: pg.mouse.click(x, y)
+        pg.wait_for_timeout(120)
+    P("(() => { const a = __app, p = a.demoProject('9:16'); p.layers = []; p.bg = '#000000'; a.setProject(p); a.deselect(); })()"); pg.wait_for_timeout(150)
+    add('rect'); P("(() => { const L = __app.project.layers[0]; L.props.x = 270; L.props.y = 480; L.shape.w = L.shape.h = 240; L.name = 'Box'; __app.commit(); })()")
+    add('arrow'); P("(() => { const L = __app.project.layers[0]; L.name = 'Arrow'; __app.commit(); })()")
+    P('__app.seek(1)'); pg.wait_for_timeout(150)
+    ids = P("__app.project.layers.map(l => l.id)"); A_, B_ = ids[0], ids[1]
+    sb = pg.locator('#stage').bounding_box(); at = lambda fx, fy: (sb['x'] + sb['width'] * fx, sb['y'] + sb['height'] * fy)
+    sel = lambda: P('__app.S.sel')
+    tapat(*at(0.88, 0.9))
+    check(f'[{label}] tap on empty canvas deselects (mint + FAB back)', sel() is None and P("document.body.dataset.mode") == 'none' and pg.locator('#fab').is_visible(), sel())
+    tapat(*at(0.25, 0.25)); s1 = sel(); tapat(*at(0.5, 0.5)); s2 = sel()
+    check(f'[{label}] tapping a layer on the canvas selects it (then another one)', s1 == B_ and s2 == A_, (s1, s2))
+    x, y = at(0.88, 0.9)
+    pg.mouse.move(x, y); pg.mouse.down(); pg.mouse.move(x - 40, y - 30, steps=6); pg.mouse.up(); pg.wait_for_timeout(100)
+    check(f'[{label}] a drag that starts on empty canvas does not deselect', sel() == A_)
+    pg.mouse.move(x, y); pg.mouse.down(); pg.wait_for_timeout(700); pg.mouse.up(); pg.wait_for_timeout(100)
+    check(f'[{label}] a long press on empty canvas does not deselect', sel() == A_)
+    wr = pg.locator('#stageWrap').bounding_box()
+    sx = sb['x'] - 12 if sb['x'] - wr['x'] > 20 else None
+    if sx is None: sy = sb['y'] - 8 if sb['y'] - wr['y'] > 12 else sb['y'] + sb['height'] + 6; sx = wr['x'] + wr['width'] / 2
+    else: sy = wr['y'] + wr['height'] / 2
+    tapat(sx, sy)
+    check(f'[{label}] tap on the dark area around the canvas deselects', sel() is None, (sx, sy, sb, wr))
+    # timeline: empty space below the rows, beside the rows (left of t=0) -> deselect; the ruler doesn't
+    def tl_pts():
+        return P("""(() => { const tl = document.getElementById('tlScroll').getBoundingClientRect(); const pad = document.querySelector('[data-testid=tl-pad]').getBoundingClientRect();
+          const row = document.querySelector(`.tl-row[data-layer="${__app.project.layers[0].id}"]`).getBoundingClientRect(); const ru = document.querySelector('[data-testid=ruler]').getBoundingClientRect();
+          return { below: [tl.right - 40, Math.min(pad.top + 20, tl.bottom - 8)], beside: [tl.left + 110, row.top + row.height / 2], ruler: [tl.right - 60, ru.top + 8] }; })()""")
+    P(f"__app.selectLayer('{A_}')"); pg.wait_for_timeout(150); tp = tl_pts()
+    tapat(*tp['ruler']); r_ok = sel() == A_
+    tapat(*tp['below']); b_ok = sel() is None
+    P(f"__app.selectLayer('{A_}')"); pg.wait_for_timeout(150); tp = tl_pts(); tapat(*tp['beside']); s_ok = sel() is None
+    check(f'[{label}] timeline: tap below / beside the rows deselects, the ruler does not', r_ok and b_ok and s_ok, (r_ok, b_ok, s_ok, tp))
+
+    # 19. ⋯ layer menu: Alight-style dropdown anchored under the ⋯ button
+    P(f"__app.selectLayer('{A_}')"); pg.wait_for_timeout(150)
+    pg.click('[data-testid=layer-more]'); pg.wait_for_timeout(250)
+    lm = P("""(() => { const m = document.querySelector('[data-testid=layer-menu]'), b = document.getElementById('btnMore').getBoundingClientRect(), r = m.getBoundingClientRect(), cs = getComputedStyle(m);
+      const its = [...m.querySelectorAll('.lm-it span')]; return { labels: its.map(s => s.textContent), bg: cs.backgroundColor, top: r.top - b.bottom, right: Math.round(innerWidth - r.right),
+        under: r.left < b.left && r.right > b.right - 30, fs: getComputedStyle(its[0]).fontSize, fsStretch: parseFloat(getComputedStyle(its[5]).fontSize), col: getComputedStyle(its[0]).color,
+        hr: getComputedStyle(m.querySelector('.lm-hr')).backgroundColor, sw: m.querySelectorAll('.lm-sw').length, swOn: m.querySelector('.lm-sw.on')?.classList.contains('none'), dlg: document.getElementById('dlg').open,
+        fits: its.every(s => s.scrollWidth <= s.clientWidth + 1) }; })()""")
+    want = ['Save to My Elements', 'Flip Horizontally', 'Flip Vertically', 'Fit Composition Area', 'Fill Composition Area', 'Stretch to Composition Area', 'Create Clipping Mask', 'Convert to Outline',
+            'Center on Canvas', 'Hide Layer', 'Lock', 'Move Up', 'Move Down', 'Easing', 'Rename']
+    check(f'[{label}] ⋯ opens a dropdown under the ⋯ button (not a modal): Alight items, swatches, then our extras', lm['labels'] == want and not lm['dlg'] and 0 <= lm['top'] <= 16 and lm['under'], lm)
+    check(f'[{label}] ⋯ menu colours/fonts match the reference (slate #35374e, 17px white, dark dividers, auto-shrunk Stretch)', lm['bg'] == 'rgb(53, 55, 78)' and lm['fs'] == '17px' and lm['col'] == 'rgb(255, 255, 255)'
+          and lm['hr'] == 'rgb(33, 34, 54)' and lm['fsStretch'] < 17 and lm['fits'] and lm['sw'] >= 6 and lm['swOn'], lm)
+    if mobile: pg.screenshot(path=f'{SHOTS}/{label}-15-layer-menu.png')
+    tapat(*at(0.5, 0.92)); pg.wait_for_timeout(100)
+    check(f'[{label}] tap outside closes the ⋯ menu (and does not deselect)', pg.locator('[data-testid=layer-menu]').count() == 0 and sel() == A_)
+    def menu(item):
+        pg.click('[data-testid=layer-more]'); pg.wait_for_timeout(150); pg.click(f'[data-testid=lm-{item}]'); pg.wait_for_timeout(150)
+    s0 = pg.evaluate(SIG); menu('flip-h'); s1 = pg.evaluate(SIG)
+    check(f'[{label}] Flip Horizontally mirrors the layer (scale -1 in x)', P("__app.project.layers[0].flipX") is True and s1['h'] != s0['h'] and pg.locator('[data-testid=layer-menu]').count() == 0)
+    menu('flip-v'); menu('flip-h')
+    check(f'[{label}] Flip Vertically / flip back', P("[!!__app.project.layers[0].flipX, !!__app.project.layers[0].flipY]") == [False, True])
+    pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    check(f'[{label}] flips are undoable', P("__app.project.layers[0].flipX") is True)
+    def tr(): return P("(() => { const L = __app.project.layers[0]; return [L.props.x, L.props.y, L.props.scale, L.props.rotation, L.shape.w, L.shape.h]; })()")
+    P("(() => { const L = __app.project.layers[0]; L.props.x = 100; L.props.rotation = 30; __app.commit(); })()")
+    menu('fit'); f1 = tr(); menu('fill'); f2 = tr(); menu('stretch'); f3 = tr()
+    check(f'[{label}] Fit / Fill / Stretch to Composition Area (centred, relative to the canvas)', f1 == [540, 960, 2.5, 0, 432, 432] and abs(f2[2] - 1920 / 432) < 1e-3 and f3 == [540, 960, 1, 0, 1080, 1920], (f1, f2, f3))
+    for _ in range(4): pg.click('[data-testid=undo]'); pg.wait_for_timeout(100)
+    fill0 = P("__app.project.layers[0].shape.fill"); menu('outline')
+    ol = P("(() => { const s = __app.project.layers[0].shape; return [s.fillOn, s.strokeW > 0, s.stroke]; })()")
+    check(f'[{label}] Convert to Outline: fill off, stroke on (in the fill colour)', ol == [False, True, fill0], (ol, fill0))
+    clipq = f"document.querySelector('.tl-row[data-layer=\"{A_}\"] .clip')"
+    menu('tag-1'); tg = P(f"(() => {{ const c = {clipq}; return [__app.project.layers[0].tag, c.dataset.tag, getComputedStyle(c).backgroundColor]; }})()")
+    menu('tag-0'); tg0 = P(f"[__app.project.layers[0].tag ?? null, {clipq}.dataset.tag ?? null]")
+    check(f'[{label}] colour tag swatches set the clip colour on the timeline (and X clears it)', tg == ['#e34829', '#e34829', 'rgb(227, 72, 41)'] and tg0 == [None, None], (tg, tg0))
+    # clipping mask: a big blue square clipped to the small box below shows only inside the box
+    P("""(() => { const a = __app, L = a.project.layers[0], B = a.project.layers[1]; L.shape.kind = 'rect'; L.shape.fillOn = true; L.shape.strokeW = 0; L.shape.fill = '#0000ff'; L.shape.w = L.shape.h = 900; L.shape.radius = 0;
+      L.flipX = false; L.flipY = false; L.props.x = 540; L.props.y = 960; L.props.scale = 1; B.props.x = 540; B.props.y = 960; B.props.scale = 1; B.shape.w = B.shape.h = 200; B.shape.fill = '#ff0000'; B.shape.radius = 0; a.commit(); })()"""); pg.wait_for_timeout(150)
+    out0, in0 = pg.evaluate(PIX, [0.3, 0.5]), pg.evaluate(PIX, [0.5, 0.5])
+    menu('clip'); pg.wait_for_timeout(100)
+    out1, in1 = pg.evaluate(PIX, [0.3, 0.5]), pg.evaluate(PIX, [0.5, 0.5])
+    clipped_row = P(f"document.querySelector('.tl-row[data-layer=\"{A_}\"]').classList.contains('clipped')")
+    pg.click('[data-testid=layer-more]'); pg.wait_for_timeout(150); rel = P("document.querySelector('[data-testid=lm-clip] span').textContent"); pg.click('[data-testid=lm-clip]'); pg.wait_for_timeout(150)
+    out2 = pg.evaluate(PIX, [0.3, 0.5])
+    check(f'[{label}] Create Clipping Mask: the layer only shows inside the layer below; Release restores', out0[2] > 200 and in0[2] > 200 and out1[:3] == [0, 0, 0] and in1[2] > 200 and in1[0] < 40 and clipped_row
+          and rel == 'Release Clipping Mask' and out2[2] > 200, (out0, in0, out1, in1, clipped_row, rel, out2))
+    menu('save'); check(f'[{label}] Save to My Elements says coming soon', 'coming soon' in (P("[...document.querySelectorAll('.toast')].map(t => t.textContent).join('|')") or ''))
+    menu('hide'); h1 = P("__app.project.layers[0].visible"); menu('hide'); menu('down'); dn = P("__app.project.layers[1].id")
+    menu('up'); up_ = P("__app.project.layers[0].id"); menu('lock'); lk = P("__app.project.layers[0].locked"); menu('lock')
+    P("(() => { const L = __app.project.layers[0]; L.props.x = 100; __app.commit(); })()"); menu('center'); cx_ = P("__app.project.layers[0].props.x")
+    menu('ease'); ez = P("__app.S.tab"); pg.click('[data-testid=panel-back]'); pg.wait_for_timeout(100)
+    check(f'[{label}] our extras live on in the menu: Hide, Move down/up, Lock, Center, Easing', h1 is False and dn == A_ and up_ == A_ and lk is True and cx_ == 540 and ez == 'ease', (h1, dn, up_, lk, cx_, ez))
+    pg.click('[data-testid=layer-more]'); pg.wait_for_timeout(150); pg.keyboard.press('Escape'); pg.wait_for_timeout(100)
+    check(f'[{label}] Escape closes the ⋯ menu', pg.locator('[data-testid=layer-menu]').count() == 0 and sel() == A_)
+    to_none()
+
     # PWA bits
     man = pg.evaluate("fetch('manifest.webmanifest').then(r => r.json())")
     check(f'[{label}] PWA manifest valid', man['display'] == 'standalone' and len(man['icons']) >= 2)

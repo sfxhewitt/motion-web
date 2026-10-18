@@ -31,7 +31,7 @@ function commit(opts = {}) {
 let saveTimer;
 function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (!store.saveProject(P())) toast('Storage full — export JSON to keep work'); }, 350); }
 
-function refreshAll() { layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
+function refreshAll() { if (layerMenu && !selLayer()) closeLayerMenu(); layoutChrome(); layoutStage(); drawFrame(); renderTimeline(); renderPanel(); updateTransport(); updateHeader(); }
 
 // body[data-mode] drives the top bar / bottom zone (none: timeline + FAB, sel: tile grid, sub: property panel)
 function layoutChrome() {
@@ -200,15 +200,17 @@ function drawFrame() {
 
 function toLocal(L, px, py) {
   const tr = evalTransform(L, S.t), a = -tr.rotation * Math.PI / 180, dx = px - tr.x, dy = py - tr.y, s = tr.scale || 1e-6;
-  return [(dx * Math.cos(a) - dy * Math.sin(a)) / s, (dx * Math.sin(a) + dy * Math.cos(a)) / s];
+  return [(dx * Math.cos(a) - dy * Math.sin(a)) / s * (L.flipX ? -1 : 1), (dx * Math.sin(a) + dy * Math.cos(a)) / s * (L.flipY ? -1 : 1)];
 }
-function toWorld(L, lx, ly) {
+// local (content) -> stage coords; flip=false for the selection box/handles (symmetric, so the knob stays on top)
+function toWorld(L, lx, ly, flip = true) {
   const tr = evalTransform(L, S.t), a = tr.rotation * Math.PI / 180;
+  if (flip) { if (L.flipX) lx = -lx; if (L.flipY) ly = -ly; }
   return [tr.x + (lx * Math.cos(a) - ly * Math.sin(a)) * tr.scale, tr.y + (lx * Math.sin(a) + ly * Math.cos(a)) * tr.scale];
 }
 function layerCorners(L) {
   const tr = evalTransform(L, S.t), b = layerBounds(L, P(), view.getContext('2d'));
-  const pt = (lx, ly) => toWorld(L, lx, ly);
+  const pt = (lx, ly) => toWorld(L, lx, ly, false);
   return { tr, b, pt, corners: [pt(-b.w / 2, -b.h / 2), pt(b.w / 2, -b.h / 2), pt(b.w / 2, b.h / 2), pt(-b.w / 2, b.h / 2)], rotH: pt(0, -b.h / 2 - 60 / (tr.scale * viewScale || 1)) };
 }
 
@@ -264,6 +266,17 @@ function hitTest(px, py) {
 }
 
 const ptrs = new Map(); let gesture = null;
+// a "tap" = released within TAP_MS and within TAP_SLOP px of where it went down (pans, long-presses and pinches never count)
+const TAP_SLOP = 8, TAP_MS = 450;
+const isTap = (g, e) => !g.cancel && performance.now() - g.t0 < TAP_MS && Math.hypot(e.clientX - g.x, e.clientY - g.y) <= TAP_SLOP;
+// the dark area around the preview canvas: a short tap deselects
+function bindStageWrapTap() {
+  const wrap = $('#stageWrap'); let g = null;
+  wrap.addEventListener('pointerdown', e => { g = e.target === wrap && e.isPrimary && S.sel ? { id: e.pointerId, x: e.clientX, y: e.clientY, t0: performance.now() } : null; if (!e.isPrimary) g = null; });
+  wrap.addEventListener('pointermove', e => { if (g && g.id === e.pointerId && Math.hypot(e.clientX - g.x, e.clientY - g.y) > TAP_SLOP) g.cancel = true; });
+  wrap.addEventListener('pointerup', e => { const t = g; g = null; if (t && t.id === e.pointerId && e.target === wrap && isTap(t, e) && S.sel) deselect(); });
+  wrap.addEventListener('pointercancel', () => (g = null));
+}
 stage.addEventListener('pointerdown', e => {
   if (!P()) return;
   stage.setPointerCapture(e.pointerId);
@@ -295,7 +308,7 @@ stage.addEventListener('pointerdown', e => {
     gesture = { mode: 'pinch', L, d0: Math.hypot(b[0] - a[0], b[1] - a[1]), a0: Math.atan2(b[1] - a[1], b[0] - a[0]), s0: valueAt(L, 'scale', S.t), r0: valueAt(L, 'rotation', S.t) };
     return;
   }
-  if (ptrs.size > 1) return;
+  if (ptrs.size > 1) { if (gesture?.mode === 'tap') gesture = null; return; }
   if (L && L.type !== 'adjust' && L.type !== 'audio' && S.t >= L.start && S.t < L.end) {
     const g = layerCorners(L), tol = 22 / viewScale;
     if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: Math.atan2(py - g.tr.y, px - g.tr.x) }; return; }
@@ -305,13 +318,14 @@ stage.addEventListener('pointerdown', e => {
   if (hit) {
     if (hit.id !== S.sel) selectLayer(hit.id);
     gesture = { mode: 'move', L: hit, x0: valueAt(hit, 'x', S.t), y0: valueAt(hit, 'y', S.t), px, py, moved: false };
-  } else { gesture = null; if (S.sel) deselect(); }
+  } else gesture = S.sel ? { mode: 'tap', x: e.clientX, y: e.clientY, t0: performance.now() } : null; // deselect on release if it stays a short tap
   drawOverlay();
 });
 stage.addEventListener('pointermove', e => {
   if (!ptrs.has(e.pointerId)) return;
   const [px, py] = stagePoint(e); ptrs.set(e.pointerId, [px, py]);
   if (!gesture) return;
+  if (gesture.mode === 'tap') { if (Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > TAP_SLOP) gesture.cancel = true; return; }
   const { L } = gesture;
   if (gesture.mode === 'stroke') {
     const lp = toLocal(L, px, py), last = gesture.st.pts[gesture.st.pts.length - 1];
@@ -342,6 +356,7 @@ stage.addEventListener('pointermove', e => {
 });
 const endPtr = e => {
   ptrs.delete(e.pointerId);
+  if (gesture?.mode === 'tap') { const g = gesture; gesture = null; if (e.type === 'pointerup' && ptrs.size === 0 && isTap(g, e)) deselect(); return; }
   if (gesture && ptrs.size === 0) { if (gesture.moved || gesture.mode === 'stroke') commit(); gesture = null; }
 };
 stage.addEventListener('pointerup', endPtr); stage.addEventListener('pointercancel', endPtr);
@@ -467,7 +482,7 @@ function placeEnd() {
 const THUMB = { r: null, cache: new Map() };
 function layerThumb(L) {
   if (L.type === 'audio' || L.type === 'adjust') return null;
-  const p = P(), key = JSON.stringify([p.w, p.h, L.type, L.shape, L.text, L.solid, L.media, L.draw, L.props, media.has(L.media?.id)]);
+  const p = P(), key = JSON.stringify([p.w, p.h, L.type, L.shape, L.text, L.solid, L.media, L.draw, L.props, L.flipX, L.flipY, media.has(L.media?.id)]);
   if (THUMB.cache.has(key)) return THUMB.cache.get(key);
   let url = null;
   try {
@@ -506,9 +521,10 @@ function renderTimeline() {
       h('button', { class: 'vis' + (L.visible ? '' : ' off'), title: 'Visibility', 'data-testid': 'vis', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
       th ? h('img', { class: 'th', src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
     const track = h('div', { class: 'tl-track' });
-    track.addEventListener('click', e => { if (e.target === track && S.sel) deselect(); });
     const strip = (L.type === 'image' || L.type === 'video') && th ? { backgroundImage: `url(${th})` } : {};
-    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : ''), style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip } },
+    const tag = L.tag ? { '--tag': L.tag } : {};
+    const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : '') + (L.tag ? ' tagged' + (isLight(L.tag) ? ' lt' : '') : ''),
+      'data-tag': L.tag || null, style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip, ...tag } },
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
     bindClip(clip, L);
     track.append(clip);
@@ -520,12 +536,12 @@ function renderTimeline() {
       const d = h('i', { class: 'kf' + (on ? ' on' : ''), style: { left: (+tk) * S.pps + 'px' }, 'data-testid': 'kf' });
       bindKey(d, L, list); track.append(d);
     }
-    inner.append(h('div', { class: 'tl-row' + (sel ? ' sel' : ''), 'data-layer': L.id }, label, track));
+    inner.append(h('div', { class: 'tl-row' + (sel ? ' sel' : '') + (L.clip && layerBelow(L) ? ' clipped' : ''), 'data-layer': L.id }, label, track));
   }
   if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap + to add a layer'));
   // empty space below the last track (pannable)
   inner.append(h('div', { class: 'tl-row tl-pad', 'data-testid': 'tl-pad', style: { height: Math.max(44, Math.round(tl.clientHeight * 0.45)) + 'px' } },
-    h('div', { class: 'tl-label pad' }), h('div', { class: 'tl-track pad', onclick: () => S.sel && deselect() })));
+    h('div', { class: 'tl-label pad' }), h('div', { class: 'tl-track pad' })));
   inner.append(h('div', { class: 'tl-past', id: 'tlPast' }));
   const sl = tl.scrollLeft, st = tl.scrollTop;
   G.rendering = true;
@@ -719,6 +735,14 @@ function bindTimelineGestures() {
   tl.addEventListener('lostpointercapture', up);
   // a pan / drag / pinch must not end in a click (deselect on empty track, select on a pill)
   tl.addEventListener('click', e => { if (G.noClick) { G.noClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+  // a short tap on empty timeline space (beside / below the rows, past the end; not the ruler band, pills, clips or keys) deselects
+  let tapDown = null;
+  tl.addEventListener('pointerdown', e => { if (e.isPrimary) tapDown = { x: e.clientX, y: e.clientY, t0: performance.now() }; }, true);
+  tl.addEventListener('click', e => {
+    if (!S.sel || !tapDown || !isTap(tapDown, e)) return;
+    if (e.target.closest('.clip, .kf, .tl-head, .tl-end-h, button, .tl-label:not(.pad)')) return;
+    deselect();
+  });
   tl.addEventListener('contextmenu', e => e.preventDefault());
   // desktop: ctrl/trackpad-pinch wheel zooms time around the playhead
   tl.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoomTo(S.pps * Math.exp(-e.deltaY * 0.01)); }, { passive: false });
@@ -738,7 +762,7 @@ function bindTimelineGestures() {
 }
 // Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
 function lockPage() {
-  const scrollable = t => t.closest?.('#panelBody, .tiles, .sh-body, .h-scroll, .h-pills, .cr-body, dialog, textarea, select, input');
+  const scrollable = t => t.closest?.('.lm-in, .lm-tags, #panelBody, .tiles, .sh-body, .h-scroll, .h-pills, .cr-body, dialog, textarea, select, input');
   document.addEventListener('touchmove', e => { if (e.cancelable && (e.touches.length > 1 || !scrollable(e.target))) e.preventDefault(); }, { passive: false });
   for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
@@ -1136,16 +1160,77 @@ function renderSheet() {
 }
 function openSheet(tabId) { if (S.sel) { S.sel = null; S.selKeys.clear(); } S.tab = 'add'; if (tabId) S.addTab = tabId; refreshAll(); }
 
+// ---- ⋯ layer menu: Alight-style dropdown anchored under the ⋯ button (tap outside to close) ----
+// colour tags shown on the layer's timeline clip (sampled from the reference swatches)
+const TAGS = [null, '#e34829', '#c8495c', '#da8d57', '#faeb90', '#8be1d4', '#5aa9e6', '#7b6cf0', '#b66ee0', '#9a9ca8'];
+const isLight = c => { const n = parseInt(c.slice(1), 16); return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 170; };
+const visualLayer = L => L.type !== 'audio' && L.type !== 'adjust';
+// Fit / Fill / Stretch to the composition: centred, unrotated, scaled relative to the canvas
+function fitLayer(L, how) {
+  const p = P(), b = layerBounds(L, p, view.getContext('2d'));
+  if (!(b.w > 0 && b.h > 0)) return;
+  let sc;
+  if (how === 'stretch') {
+    const kx = p.w / b.w, ky = p.h / b.h;
+    if (L.type === 'shape' && L.shape.kind === 'path') L.shape.pts = L.shape.pts.map(([x, y]) => [+(x * kx).toFixed(1), +(y * ky).toFixed(1)]);
+    else if (L.type === 'shape') { L.shape.w = p.w; L.shape.h = p.h; }
+    else if (L.type === 'image' || L.type === 'video') { L.media.w = p.w; L.media.h = p.h; }
+    sc = 1;
+  } else sc = (how === 'fit' ? Math.min : Math.max)(p.w / b.w, p.h / b.h);
+  writeProp(L, 'x', S.t, p.w / 2); writeProp(L, 'y', S.t, p.h / 2); writeProp(L, 'rotation', S.t, 0); writeProp(L, 'scale', S.t, +sc.toFixed(4));
+  commit();
+}
+function convertToOutline(L) {
+  const sh = L.shape; if (!sh.fillOn && sh.strokeW > 0) return toast('Already an outline');
+  if (sh.fillOn) sh.stroke = sh.fill; // the outline takes the fill colour
+  sh.fillOn = false; sh.strokeW = Math.max(sh.strokeW || 0, Math.round(Math.min(P().w, P().h) * 0.012)); commit();
+}
+const layerBelow = L => { const ls = P().layers; return ls[ls.indexOf(L) + 1] || null; };
+function toggleClip(L) { L.clip = !L.clip; commit(); toast(L.clip ? 'Clipped to ' + (layerBelow(L)?.name || 'layer below') : 'Clipping mask released'); }
+let layerMenu = null, lmWrap = null;
+function closeLayerMenu() { if (!layerMenu) return; lmWrap.remove(); layerMenu = lmWrap = null; $('#btnMore').classList.remove('on'); }
 function openLayerMenu() {
   const L = selLayer(); if (!L) return;
-  const it = (ic, label, fn) => h('button', { class: 'act wide', onclick: () => { dlg.close(); fn(); } }, icon(ic), label);
-  openDialog(L.name || 'Layer', h('div', { class: 'plist' },
-    it('center', 'Center on canvas', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
-    it(L.visible ? 'eyeoff' : 'eye', L.visible ? 'Hide layer' : 'Show layer', () => { L.visible = !L.visible; commit(); }),
-    it(L.locked ? 'unlock' : 'lock', L.locked ? 'Unlock' : 'Lock', () => { L.locked = !L.locked; commit(); }),
-    it('up', 'Move up', () => moveLayer(L, -1)), it('down', 'Move down', () => moveLayer(L, 1)),
-    it('ease', 'Easing', () => openSub('ease')),
-    it('text', 'Rename', () => { const n = $('#layerName'); n.focus(); n.select(); })));
+  if (layerMenu) return closeLayerMenu();
+  const vis = visualLayer(L), below = layerBelow(L), clipOk = vis && below && visualLayer(below);
+  const it = (label, tid, fn, why = '') => h('button', { class: 'lm-it' + (why ? ' off' : ''), 'data-testid': 'lm-' + tid, 'aria-disabled': why ? 'true' : null,
+    onclick: () => { if (why) return toast(why); closeLayerMenu(); fn(); } }, h('span', {}, label));
+  const hr = () => h('i', { class: 'lm-hr' });
+  const noVis = vis ? '' : 'Not available for ' + (L.type === 'audio' ? 'audio' : 'adjustment') + ' layers';
+  const tags = h('div', { class: 'lm-tags', 'data-testid': 'lm-tags' }, ...TAGS.map((c, i) => h('button', {
+    class: 'lm-sw' + (c ? '' : ' none') + ((L.tag || null) === c ? ' on' : ''), style: c ? { '--c': c } : {}, title: c ? 'Colour tag' : 'No colour tag', 'aria-label': c ? 'Tag ' + c : 'No tag',
+    'data-testid': 'lm-tag-' + i, onclick: () => { L.tag = c; if (!c) delete L.tag; closeLayerMenu(); commit(); } })));
+  const lmIn = h('div', { class: 'lm-in' },
+    it('Save to My Elements', 'save', soon('Save to My Elements')),
+    it('Flip Horizontally', 'flip-h', () => { L.flipX = !L.flipX; commit(); }, noVis),
+    it('Flip Vertically', 'flip-v', () => { L.flipY = !L.flipY; commit(); }, noVis),
+    it('Fit Composition Area', 'fit', () => fitLayer(L, 'fit'), noVis),
+    it('Fill Composition Area', 'fill', () => fitLayer(L, 'fill'), noVis),
+    it('Stretch to Composition Area', 'stretch', () => fitLayer(L, 'stretch'), noVis || (L.type === 'text' ? 'Text can’t be stretched — use Fit or Fill' : '')),
+    hr(),
+    it(L.clip ? 'Release Clipping Mask' : 'Create Clipping Mask', 'clip', () => toggleClip(L), L.clip || clipOk ? '' : 'Needs a visual layer below this one'),
+    it('Convert to Outline', 'outline', () => convertToOutline(L), L.type === 'shape' ? '' : 'Convert to Outline works on shapes'),
+    hr(), tags, hr(),
+    it('Center on Canvas', 'center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
+    it(L.visible ? 'Hide Layer' : 'Show Layer', 'hide', () => { L.visible = !L.visible; commit(); }),
+    it(L.locked ? 'Unlock' : 'Lock', 'lock', () => { L.locked = !L.locked; commit(); }),
+    it('Move Up', 'up', () => moveLayer(L, -1)), it('Move Down', 'down', () => moveLayer(L, 1)),
+    it('Easing', 'ease', () => openSub('ease')),
+    it('Rename', 'rename', () => { const n = $('#layerName'); n.focus(); n.select(); }));
+  layerMenu = h('div', { class: 'lm', role: 'menu', 'data-testid': 'layer-menu' }, lmIn);
+  const scrim = h('div', { class: 'lm-scrim', 'data-testid': 'layer-menu-scrim' });
+  // tap outside closes; the tap is swallowed (it does not deselect / hit what is underneath)
+  const close = e => { e.preventDefault(); e.stopPropagation(); closeLayerMenu(); };
+  scrim.addEventListener('pointerdown', close); scrim.addEventListener('click', e => e.stopPropagation());
+  lmWrap = h('div', { class: 'lm-wrap' }, scrim, layerMenu);
+  document.body.append(lmWrap);
+  const r = $('#btnMore').getBoundingClientRect(), right = Math.max(8, innerWidth - r.right + 4 - 14);
+  layerMenu.style.right = right + 'px'; layerMenu.style.top = r.bottom + 12 + 'px';
+  layerMenu.style.setProperty('--ax', (innerWidth - right - (r.left + r.width / 2)) + 'px'); // arrow x from the menu's right edge
+  lmIn.style.maxHeight = `calc(100dvh - ${Math.round(r.bottom + 12 + 10)}px - var(--safe-b))`;
+  // iOS-style auto-shrink: labels that don't fit get a smaller font (Alight's "Stretch to Composition Area")
+  for (const sp of layerMenu.querySelectorAll('.lm-it span')) { let f = 17; while (sp.scrollWidth > sp.clientWidth + 0.5 && f > 11) sp.style.fontSize = (f -= 0.5) + 'px'; }
+  $('#btnMore').classList.add('on');
 }
 function selectedKeyObjs() {
   const out = [];
@@ -1494,7 +1579,7 @@ function buildChrome() {
   $('#fileAudio').onchange = e => { const f = e.target.files[0]; if (f) importAudioFile(f); e.target.value = ''; };
   $('#fileJson').onchange = e => { const f = e.target.files[0]; if (f) importJSON(f); e.target.value = ''; };
   $('#pickColor').addEventListener('input', e => { S.draw.color = e.target.value; renderPanel(); });
-  window.addEventListener('resize', () => { layoutStage(); drawFrame(); renderTimeline(); });
+  window.addEventListener('resize', () => { closeLayerMenu(); layoutStage(); drawFrame(); renderTimeline(); });
   new ResizeObserver(() => { layoutStage(); drawFrame(); }).observe($('#stageWrap'));
   window.addEventListener('keydown', e => {
     if (e.target.matches('input, textarea, select')) return;
@@ -1502,7 +1587,7 @@ function buildChrome() {
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (e.key === 'k') toggleKeyAll();
-    else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else goBack(); }
+    else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
@@ -1511,12 +1596,12 @@ function buildChrome() {
     else if (e.key === 'ArrowRight') seek(S.t + 1 / P().fps);
   });
 }
-function afterHistory(s) { S.project = s; if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
+function afterHistory(s) { closeLayerMenu(); S.project = s; if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
 function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
-  buildChrome(); lockPage(); bindTimelineGestures();
+  buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
   if (!p) p = demoProject('9:16');

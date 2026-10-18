@@ -48,6 +48,17 @@ Top bar: `<` · layer name · duplicate · trash · ⋯ (layer menu). The clip b
 caps; the row scrolls to the top. Tile grid: small tiles (speed — soon, trim start, split, trim end, mute), then
 **Color & Fill · Border & Shadow · Blending & Opacity**, **Move & Transform · Edit Shape/Text/Media · Presets
 (soon) · Effects**, then Easing / layer up / down / lock.
+A short tap on empty space (preview outside any layer, the dark surround, empty timeline space beside / below the
+rows; not the ruler or the tile grid) deselects back to the mint **+**; pans, long presses and pinches don't.
+### ⋯ layer menu (`reference/14-layer-menu.jpg`)
+Dropdown anchored under ⋯ (arrow pointing at it), not a modal: slate `#35374e` rounded popover, system font 17px
+white, labels that don't fit auto-shrink (Stretch… ≈13px), 3px `#212236` dividers. **Save to My Elements (soon) ·
+Flip Horizontally · Flip Vertically · Fit / Fill / Stretch to Composition Area** | **Create (Release) Clipping Mask
+· Convert to Outline** | sideways-scrolling colour-tag swatches (X = none, `#e34829`, `#c8495c`, `#da8d57`,
+`#faeb90`, `#8be1d4`, blue, indigo, purple, grey; they colour the timeline clip) | KINETIC extras: Center on Canvas
+· Hide · Lock · Move Up / Down · Easing · Rename. Tap outside (swallowed) or Esc closes. Flips are `flipX/flipY`
+(scale −1); a clipping mask (`clip: true`) draws the layer only where the layer directly below is (runs of
+clipped layers share the base; clipped rows get an indented pill).
 ### Sub panels — `data-mode=sub`
 Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and tools, body on the right.
 - **Edit Points** (vector drawing / "Convert to Points"): tap the preview to add points, drag them; trackpad +

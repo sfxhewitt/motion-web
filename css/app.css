@@ -478,3 +478,32 @@ dialog.light .mini { color: var(--l-ink); }
   :root { --bz: 330px; }
   .tiles { max-width: 640px; }
 }
+
+/* ---------- ⋯ layer menu: dropdown under the ⋯ button (Alight: slate #35374e popover, SF 17px white, thick dark dividers, tag swatches) ---------- */
+.lm-wrap { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.lm-scrim { position: absolute; inset: 0; pointer-events: auto; touch-action: none; }
+.lm { position: fixed; width: 200px; pointer-events: auto; background: #35374e; border-radius: 14px 14px 14px 22px; box-shadow: 0 10px 34px rgba(0,0,0,.45);
+  transform-origin: calc(100% - var(--ax, 24px)) 0; animation: lmIn .16s cubic-bezier(.2,.9,.3,1.2); font-family: -apple-system, system-ui, "SF Pro Text", "Helvetica Neue", Roboto, Arial, sans-serif; }
+/* the little arrow pointing up at the ⋯ button */
+.lm::before { content: ''; position: absolute; top: -11px; right: calc(var(--ax, 24px) - 10px); width: 20px; height: 12px; background: #35374e; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.lm-in { overflow-y: auto; overscroll-behavior: contain; border-radius: inherit; padding: 2px 0 0; scrollbar-width: none; touch-action: pan-y; }
+.lm-in::-webkit-scrollbar { display: none; }
+.lm-it { display: flex; align-items: center; width: 100%; height: 44px; padding: 0 12px 0 17px; text-align: left; color: #fff; }
+.lm-it span { flex: 1; min-width: 0; font-weight: 400; font-size: 17px; line-height: 1.2; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; }
+.lm-it:active { background: rgba(255,255,255,.07); }
+.lm-it.off { color: rgba(255,255,255,.38); }
+.lm-hr { display: block; height: 3px; background: #212236; margin: 2px 0; }
+.lm-tags { display: flex; gap: 7px; padding: 7px 9px 9px; overflow-x: auto; scrollbar-width: none; touch-action: pan-x; overscroll-behavior: contain; }
+.lm-tags::-webkit-scrollbar { display: none; }
+.lm-sw { flex: none; width: 35px; height: 35px; border-radius: 7px; background: linear-gradient(160deg, color-mix(in srgb, var(--c) 88%, #fff) 0%, var(--c) 45%, color-mix(in srgb, var(--c) 82%, #000) 100%); }
+.lm-sw.on { box-shadow: inset 0 0 0 2.5px #fff; }
+.lm-sw.none { background: #8f9095 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 35 35'%3E%3Cpath d='M6 6l23 23M29 6L6 29' stroke='%23fff' stroke-width='1.6'/%3E%3C/svg%3E") center / 100% 100%; }
+.lm-sw.none.on { box-shadow: inset 0 0 0 2.5px #fff; }
+@keyframes lmIn { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+/* colour tag on the timeline clip (image/video strips keep their frames and get a tag band) */
+.clip.tagged:not(.strip) { background-color: var(--tag); }
+.clip.tagged.lt .cn { color: #1b1d29; }
+.clip.tagged.strip { box-shadow: inset 0 -4px 0 var(--tag); }
+/* clipped layer (clipping mask): indented pill with a hook */
+.tl-row.clipped .tl-label { padding-left: 14px; }
+.tl-row.clipped .tl-label::before { content: ''; position: absolute; left: 4px; top: 6px; width: 6px; height: 10px; border-left: 1.6px solid #a9abb6; border-bottom: 1.6px solid #a9abb6; border-radius: 0 0 0 3px; }

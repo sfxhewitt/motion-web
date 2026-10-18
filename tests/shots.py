@@ -6,7 +6,7 @@ BASE = os.environ.get('BASE', 'http://localhost:8765/'); OUT = '/workspace/kntc-
 REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'reference')
 PAIRS = [('editor', '01-editor'), ('add-shape', '02-add-shape'), ('add-media', '03-add-media'), ('add-audio', '04-add-audio'),
          ('add-object', '05-add-object'), ('add-template', '06-add-template'), ('layer-selected', '07-layer-selected'),
-         ('edit-points', '08-edit-points'), ('drawing', '09-drawing'), ('home', '10-home'), ('create', '11-create')]
+         ('edit-points', '08-edit-points'), ('drawing', '09-drawing'), ('home', '10-home'), ('create', '11-create'), ('layer-menu', '14-layer-menu')]
 os.makedirs(OUT, exist_ok=True)
 with sync_playwright() as pw:
     b = pw.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader'])
@@ -34,6 +34,7 @@ with sync_playwright() as pw:
     for t in ('media', 'audio', 'object', 'template'):
         pg.click(f'[data-testid=sheet-{t}]'); shot(f'add-{t}')
     pg.click('[data-testid=sheet-shape]'); pg.click('[data-testid=add-rect]'); shot('layer-selected')
+    pg.click('[data-testid=layer-more]'); shot('layer-menu', 450); pg.keyboard.press('Escape'); pg.wait_for_timeout(150)
     pg.click('[data-testid=tab-layer]'); shot('sub-transform')
     pg.click('[data-testid=panel-back]'); pg.click('[data-testid=tab-style]'); shot('sub-color-fill')
     # vector drawing -> Edit Points: tap a few points on the preview

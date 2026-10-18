@@ -74,7 +74,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v7', "'kntc-v7'" in sw)
+        check('service worker cache bumped to kntc-v8', "'kntc-v8'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4):
@@ -325,6 +325,36 @@ def main():
         pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
         Lr = P(f"(() => {{ const L = __app.project.layers.find(l => l.id === '{L0['id']}'); return L && {{ start: L.start, end: L.end }}; }})()")
         check('clip end beyond the duration persists after save/reload', Lr and abs(Lr['end'] - Lt['end']) < 1e-6 and Lr['end'] > P('__app.project.duration'), (Lt['end'], Lr, P('__app.project.duration')))
+        # tap on empty space deselects -- only a short tap with little movement (real touch input)
+        P("__app.renderer.render = () => {}")
+        P("(() => { const a = __app, p = a.demoProject('9:16'); p.layers = []; a.setProject(p); a.addLayer(a.makeLayer(a.project, 'shape', { kind: 'rect' })); a.seek(1); })()"); pg.wait_for_timeout(200)
+        lid = P('__app.S.sel'); sb = P("(() => { const r = document.getElementById('stage').getBoundingClientRect(), w = document.getElementById('stageWrap').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, wx: w.left, wy: w.top, ww: w.width, wh: w.height }; })()")
+        ex, ey = sb['x'] + sb['w'] * 0.88, sb['y'] + sb['h'] * 0.88
+        reselect = lambda: (P(f"__app.selectLayer('{lid}')"), pg.wait_for_timeout(120))
+        gesture([(ex, ey, ex - 60, ey - 50)], steps=10, dt=16); pg.wait_for_timeout(150); a1 = P('__app.S.sel')
+        touch('touchStart', [(ex, ey)]); pg.wait_for_timeout(700); touch('touchEnd', []); pg.wait_for_timeout(150); a2 = P('__app.S.sel')
+        sc0 = P('__app.project.layers[0].props.scale')
+        gesture([(ex - 40, ey - 40, ex - 70, ey - 70), (ex, ey, ex + 20, ey + 20)], steps=10, dt=16); pg.wait_for_timeout(150); a3 = P('__app.S.sel'); sc1 = P('__app.project.layers[0].props.scale')
+        check('canvas: swipe, long press and pinch on empty canvas keep the selection (pinch still scales)', a1 == lid and a2 == lid and a3 == lid and sc1 != sc0, (a1, a2, a3, sc0, sc1))
+        tap(ex, ey); check('canvas: a short tap on empty canvas deselects', P('__app.S.sel') is None and P("document.body.dataset.mode") == 'none')
+        reselect(); cx, cy = sb['x'] + sb['w'] / 2, sb['y'] + sb['h'] / 2
+        tap(cx, cy); check('canvas: tapping the layer keeps it selected', P('__app.S.sel') == lid)
+        ox_ = sb['x'] - 14 if sb['x'] - sb['wx'] > 20 else sb['wx'] + sb['ww'] / 2
+        oy_ = sb['wy'] + sb['wh'] / 2 if sb['x'] - sb['wx'] > 20 else sb['y'] + sb['h'] + 6
+        gesture([(ox_, oy_, ox_ - 10, oy_ + 60)], steps=8); pg.wait_for_timeout(150); a4 = P('__app.S.sel')
+        tap(ox_, oy_); a5 = P('__app.S.sel')
+        check('dark surround: swipe keeps the selection, a short tap deselects', a4 == lid and a5 is None, (a4, a5, ox_, oy_))
+        reselect(); reset_scroll()
+        # with a selection the panel covers all but one row, so the empty space is beside the row (left of t = 0)
+        pad = P(f"(() => {{ const r = document.querySelector('.tl-row[data-layer=\"{lid}\"]').getBoundingClientRect(), t = document.getElementById('tlScroll').getBoundingClientRect(); return {{ x: t.left + 110, y: r.top + r.height / 2 }}; }})()")
+        check('timeline: the spot beside the row is empty track space', P(f"document.elementFromPoint({pad['x']}, {pad['y']}).className").split()[0] in ('tl-track', 'tl-row'), P(f"document.elementFromPoint({pad['x']}, {pad['y']}).className"))
+        gesture([(pad['x'], pad['y'], pad['x'] + 120, pad['y'])], steps=10, dt=20); pg.wait_for_timeout(300); settle(); b1 = P('__app.S.sel')
+        touch('touchStart', [(pad['x'], pad['y'])]); pg.wait_for_timeout(700); touch('touchEnd', []); pg.wait_for_timeout(150); b2 = P('__app.S.sel')
+        reset_scroll()
+        ru = P("(() => { const r = document.querySelector('[data-testid=ruler]').getBoundingClientRect(), t = document.getElementById('tlScroll').getBoundingClientRect(); return { x: Math.min(r.right, t.right) - 50, y: r.top + 8 }; })()"); tap(ru['x'], ru['y']); b3 = P('__app.S.sel')
+        reset_scroll()
+        tap(pad['x'], pad['y']); b4 = P('__app.S.sel')
+        check('timeline: pan / long press on empty space and taps on the ruler keep the selection; a short tap deselects', b1 == lid and b2 == lid and b3 == lid and b4 is None, (b1, b2, b3, b4))
         check('no page errors', not [e for e in errs if 'GL Driver' not in e], errs[:5])
         b.close()
 

@@ -175,44 +175,62 @@ export class Renderer {
     const W = target.width, H = target.height, s = W / project.w;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = project.bg; ctx.fillRect(0, 0, W, H);
-    const lc = this.layerCanvas; this._size(lc, W, H);
-    const lctx = lc.getContext('2d');
-    for (let i = project.layers.length - 1; i >= 0; i--) {
-      const L = project.layers[i];
-      if (!L.visible || t < L.start || t >= L.end || L.type === 'audio') continue;
-      const tr = evalTransform(L, t);
-      if (tr.opacity <= 0 && L.type !== 'adjust') continue;
-      const op = OPS[L.blend] || 'source-over';
-      const shaderFx = this.fx.ok && this.fx.hasShaderFx(L.effects);
-      try {
-        if (L.type === 'adjust') {
-          if (!shaderFx) continue;
-          this._size(this.tmp, W, H); const tctx = this.tmp.getContext('2d');
-          tctx.clearRect(0, 0, W, H); tctx.drawImage(target, 0, 0);
-          const out = this.fx.apply(this.tmp, L.effects, t, s);
-          ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity));
-          ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0);
-          ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-          continue;
-        }
-        const drawTo = (c) => {
-          c.setTransform(s, 0, 0, s, 0, 0);
-          c.translate(tr.x, tr.y); c.rotate(tr.rotation * Math.PI / 180); c.scale(tr.scale, tr.scale);
-          if (L.shadow?.on && L.type !== 'adjust') { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
-          drawContent(c, L, project);
-        };
-        if (!shaderFx && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
-          ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore();
-        } else {
-          lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, W, H);
-          lctx.save(); drawTo(lctx); lctx.restore();
-          const src = shaderFx ? this.fx.apply(lc, L.effects, t, s) : lc;
-          ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
-          ctx.drawImage(src, 0, 0); ctx.restore();
-        }
-      } catch (e) { if (this.errors.length < 20) this.errors.push(String(e)); console.error(e); }
+    this._size(this.layerCanvas, W, H);
+    const Ls = project.layers, live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio';
+    const canClip = L => L.type !== 'adjust' && L.type !== 'audio';
+    for (let i = Ls.length - 1; i >= 0; i--) {
+      const L = Ls[i];
+      // clipping mask: the run of `clip` layers directly above L is drawn only where L is (L masks them)
+      const clipped = [];
+      if (canClip(L)) for (let j = i - 1; j >= 0 && Ls[j].clip && canClip(Ls[j]); j--) clipped.push(Ls[j]);
+      if (clipped.length) {
+        i -= clipped.length;
+        if (!live(L)) continue; // hidden / inactive mask -> nothing of the group shows
+        const g = this.group || (this.group = document.createElement('canvas')); this._size(g, W, H);
+        const gctx = g.getContext('2d'); gctx.setTransform(1, 0, 0, 1, 0, 0); gctx.globalCompositeOperation = 'source-over'; gctx.clearRect(0, 0, W, H);
+        this._layer(gctx, L, t, s, W, H, 'source-over', project);
+        for (const C of clipped) if (live(C)) this._layer(gctx, C, t, s, W, H, 'source-atop', project);
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = OPS[L.blend] || 'source-over'; ctx.drawImage(g, 0, 0); ctx.restore();
+        continue;
+      }
+      if (!live(L)) continue;
+      this._layer(ctx, L, t, s, W, H, OPS[L.blend] || 'source-over', project);
     }
+  }
+  // draw one layer onto ctx with composite op `op`
+  _layer(ctx, L, t, s, W, H, op, project) {
+    const tr = evalTransform(L, t);
+    if (tr.opacity <= 0 && L.type !== 'adjust') return;
+    const shaderFx = this.fx.ok && this.fx.hasShaderFx(L.effects);
+    const lc = this.layerCanvas, lctx = lc.getContext('2d');
+    try {
+      if (L.type === 'adjust') {
+        if (!shaderFx) return;
+        this._size(this.tmp, W, H); const tctx = this.tmp.getContext('2d');
+        tctx.clearRect(0, 0, W, H); tctx.drawImage(ctx.canvas, 0, 0);
+        const out = this.fx.apply(this.tmp, L.effects, t, s);
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity));
+        ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0);
+        ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        return;
+      }
+      const drawTo = (c) => {
+        c.setTransform(s, 0, 0, s, 0, 0);
+        c.translate(tr.x, tr.y); c.rotate(tr.rotation * Math.PI / 180); c.scale(tr.scale * (L.flipX ? -1 : 1), tr.scale * (L.flipY ? -1 : 1));
+        if (L.shadow?.on && L.type !== 'adjust') { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
+        drawContent(c, L, project);
+      };
+      if (!shaderFx && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
+        ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore();
+      } else {
+        lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, W, H);
+        lctx.save(); drawTo(lctx); lctx.restore();
+        const src = shaderFx ? this.fx.apply(lc, L.effects, t, s) : lc;
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
+        ctx.drawImage(src, 0, 0); ctx.restore();
+      }
+    } catch (e) { if (this.errors.length < 20) this.errors.push(String(e)); console.error(e); }
   }
 }
 
