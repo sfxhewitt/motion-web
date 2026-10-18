@@ -72,7 +72,23 @@ body.panel-open { --tlh: 118px; }
 /* touch panning/zoom is done in JS (pointer events); overflow stays scrollable for mouse wheels / trackpads and programmatic scroll */
 #tlScroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: none; touch-action: none; scrollbar-width: none; }
 #tlScroll::-webkit-scrollbar { display: none; }
-#tlInner { position: relative; min-height: 100%; min-width: 100%; }
+/* z-index: 0 makes #tlInner a stacking context so the grid (z -1) paints above the timeline bg but under the rows */
+#tlInner { position: relative; z-index: 0; min-height: 100%; min-width: 100%; }
+/* virtual timeline: grid, lanes and ticks run across the whole (growing) extent */
+.tl-grid { position: absolute; top: 0; bottom: 0; right: 0; z-index: -1; pointer-events: none;
+  background-image: linear-gradient(90deg, rgba(0,240,255,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(0,240,255,.03) 1px, transparent 1px); }
+/* region past the project end: darker, with an orange END marker line (Alight-style) */
+.tl-past { position: absolute; top: 0; bottom: 0; right: 0; z-index: 2; pointer-events: none; background: rgba(0,0,0,.5); border-left: 1.5px solid var(--or);
+}
+.tl-past.r { z-index: 0; background: rgba(0,0,0,.45); }
+.tl-end-h { position: absolute; top: 0; bottom: 0; width: 44px; margin-left: -22px; z-index: 3; cursor: ew-resize; touch-action: none; }
+.tl-end-h span { position: absolute; left: 22px; top: 2px; padding: 1px 3px; font: 700 7px/1 var(--mono); letter-spacing: .1em; color: #140800; background: var(--or); border-radius: 0 2px 2px 0; pointer-events: none; }
+.tl-end-h.grabbed span { box-shadow: 0 0 10px var(--or); }
+/* rubber band left of 0: only the time content shifts (class only while active, translate creates stacking contexts) */
+#tlInner.rb .tl-track, #tlInner.rb .tl-ruler, #tlInner.rb .tl-grid, #tlInner.rb .tl-past, #tlInner.rb #playhead { translate: var(--rb, 0px) 0; }
+#tlInner.rb-back .tl-track, #tlInner.rb-back .tl-ruler, #tlInner.rb-back .tl-grid, #tlInner.rb-back .tl-past, #tlInner.rb-back #playhead { transition: translate .35s cubic-bezier(.2,.8,.2,1); }
+.tl-row.tl-pad { border-bottom: 0; }
+.tl-track.pad { background: none; }
 .tl-row { display: flex; height: 30px; border-bottom: 1px solid rgba(28,34,54,.6); }
 .tl-row.sel { background: rgba(0,240,255,.04); }
 .tl-row.subrow { height: 20px; }
@@ -89,7 +105,7 @@ body.panel-open { --tlh: 118px; }
 .tl-ruler i { position: absolute; top: 12px; bottom: 0; width: 1px; background: var(--line2); font: 8px/1 var(--mono); font-style: normal; color: var(--tx3); }
 .tl-ruler i.maj { top: 4px; background: var(--tx3); }
 .tl-ruler i { text-indent: 3px; white-space: nowrap; }
-.tl-track { position: relative; flex: 1; min-width: 0; margin-left: 12px; touch-action: none; }
+.tl-track { position: relative; flex: 1; min-width: 0; margin-left: 12px; touch-action: none; background: rgba(255,255,255,.012); }
 /* overflow visible so the selected clip's trim handles can reach 44px wide (half outside the clip); .cn clips the name itself */
 .clip { position: absolute; top: 4px; bottom: 4px; border-radius: 2px; display: flex; align-items: center; touch-action: none; cursor: grab;
   background: linear-gradient(90deg, rgba(0,240,255,.16), rgba(0,240,255,.07)); border: 1px solid rgba(0,240,255,.35); transition: box-shadow .15s; }

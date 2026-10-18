@@ -65,7 +65,7 @@ async function importMediaFile(file) {
 
 // ---------------- project ops ----------------
 function setProject(p, { resetHistory = true } = {}) {
-  S.project = p; S.sel = null; S.selKeys.clear(); S.t = Math.min(S.t, p.duration);
+  S.project = p; S.sel = null; S.selKeys.clear(); S.t = Math.min(S.t, p.duration); G.extT = 0;
   if (resetHistory) history.reset(p);
   store.saveProject(p); hydrateMedia(p); refreshAll();
 }
@@ -278,26 +278,75 @@ function toggleKeyAll() {
 // ---------------- timeline ----------------
 const tl = $('#tlScroll');
 function movePlayhead() {
-  const x = LABEL_W() + 12 + S.t * S.pps;
+  const x = tlOriginX() + S.t * S.pps;
   $('#playhead').style.transform = `translateX(${x}px)`;
   if (S.playing) {
     const vw = tl.clientWidth;
     if (x > tl.scrollLeft + vw - 30 || x < tl.scrollLeft + LABEL_W()) tl.scrollLeft = Math.max(0, x - LABEL_W() - 20);
   }
 }
+// The timeline is a virtual canvas wider than the project: it spans max(duration, furthest clip/key) + 1.5 screens and
+// grows while you pan to the right (up to +4 screens) or auto-scroll during a drag (unbounded). The region past the
+// project end is shaded with an END marker (draggable to change the duration). Clips may extend past the end; playback
+// and export simply stop at the duration.
+function deselect() { S.sel = null; S.selKeys.clear(); renderTimeline(); renderPanel(); drawOverlay(); }
+const tickStep = () => (S.pps > 120 ? 0.25 : S.pps > 50 ? 0.5 : S.pps > 22 ? 1 : 2);
+const viewT = () => Math.max(1, tl.clientWidth - LABEL_W() - 12) / S.pps; // one screen of time
+function contentEnd(p = P()) {
+  let e = p.duration;
+  for (const L of p.layers) { e = Math.max(e, L.end); for (const { k } of allKeys(L)) e = Math.max(e, k.t); }
+  return e;
+}
+const MAX_INNER_PX = 400000;
+function addTicks(ruler, from, to) {
+  const step = tickStep();
+  for (let i = Math.ceil(from / step - 1e-6); i * step <= to + 1e-6; i++) {
+    const t = i * step; if (t <= (ruler._tickTo ?? -1) + 1e-6) continue;
+    const major = Math.abs(t - Math.round(t)) < 1e-6;
+    ruler.append(h('i', { class: major ? 'maj' : '', style: { left: t * S.pps + 'px' } }, major ? String(Math.round(t)) + 's' : ''));
+  }
+  ruler._tickTo = Math.max(ruler._tickTo ?? -1, to);
+}
+// grow the virtual extent (seconds) without re-rendering (so in-flight drags keep their elements)
+function setExtent(T) {
+  T = Math.min(T, (MAX_INNER_PX - tlOriginX()) / S.pps);
+  if (T <= G.extT + 1e-6) return;
+  G.extT = T;
+  const inner = $('#tlInner'); if (!inner) return;
+  inner.style.width = tlOriginX() + T * S.pps + 'px';
+  const ruler = inner.querySelector('.tl-ruler'); if (ruler) addTicks(ruler, 0, T);
+  G.updBars?.();
+}
+// make room so scrollLeft can reach x (pan: capped to content end + 4 screens; drag auto-scroll: uncapped)
+function roomFor(x, pan) {
+  let T = (x + tl.clientWidth - tlOriginX()) / S.pps + 0.25 * viewT();
+  if (pan) T = Math.min(T, G.panCapT);
+  setExtent(T);
+}
+function placeEnd() {
+  const p = P(), x = p.duration * S.pps;
+  const past = $('#tlPast'), rp = $('#tlPastR'), hd = $('#tlEndH');
+  if (past) past.style.left = tlOriginX() + x + 'px';
+  if (rp) rp.style.left = x + 'px';
+  if (hd) hd.style.left = x + 'px';
+}
 function renderTimeline() {
   const p = P(); if (!p) return;
   const lw = LABEL_W();
   if (S.autoFit && tl.clientWidth > 0) S.pps = Math.max(12, (tl.clientWidth - lw - 48) / p.duration);
-  const W = p.duration * S.pps;
-  const inner = h('div', { id: 'tlInner', style: { width: lw + W + 72 + 'px', '--lw': lw + 'px' } });
-  // ruler
+  const vt = viewT(), ce = contentEnd(p);
+  G.panCapT = ce + 4 * vt;
+  G.extT = Math.max(ce + 1.5 * vt, G.extT || 0);
+  G.extT = Math.min(G.extT, (MAX_INNER_PX - tlOriginX()) / S.pps);
+  const inner = h('div', { id: 'tlInner', style: { width: tlOriginX() + G.extT * S.pps + 'px', '--lw': lw + 'px', '--rb': '0px' } });
+  // grid across the whole extent (major line per second, minor per half second)
+  inner.append(h('div', { class: 'tl-grid', style: { left: tlOriginX() + 'px', backgroundSize: `${S.pps}px 100%, ${S.pps / 2}px 100%` } }));
+  // ruler (+ shaded region past the end and the draggable END marker)
   const ruler = h('div', { class: 'tl-ruler', 'data-testid': 'ruler' });
-  const step = S.pps > 120 ? 0.25 : S.pps > 50 ? 0.5 : 1;
-  for (let t = 0; t <= p.duration + 1e-6; t += step) {
-    const major = Math.abs(t - Math.round(t)) < 1e-6;
-    ruler.append(h('i', { class: major ? 'maj' : '', style: { left: t * S.pps + 'px' } }, major ? String(Math.round(t)) + 's' : ''));
-  }
+  ruler.append(h('div', { class: 'tl-past r', id: 'tlPastR' }));
+  addTicks(ruler, 0, G.extT);
+  const endH = h('div', { class: 'tl-end-h', id: 'tlEndH', 'data-testid': 'end-marker', title: 'Drag to change the project duration' }, h('span', {}, 'END'));
+  bindEnd(endH); ruler.append(endH);
   inner.append(h('div', { class: 'tl-row tl-head' }, h('div', { class: 'tl-label corner' }, `${p.layers.length} LAYERS`), ruler));
   bindScrub(ruler);
   for (const L of p.layers) {
@@ -306,7 +355,7 @@ function renderTimeline() {
       h('button', { class: 'vis', title: 'Visibility', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
       h('span', { class: 'ln t-' + L.type }, L.name));
     const track = h('div', { class: 'tl-track' });
-    track.addEventListener('click', e => { if (e.target === track) { const r = track.getBoundingClientRect(); seek((e.clientX - r.left) / S.pps); } });
+    track.addEventListener('click', e => { if (e.target === track) { if (S.sel) return deselect(); const r = track.getBoundingClientRect(); seek((e.clientX - r.left) / S.pps); } });
     const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden'), style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px' } },
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, L.name), h('b', { class: 'trim r' }));
     bindClip(clip, L);
@@ -332,10 +381,14 @@ function renderTimeline() {
     }
   }
   if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap ＋ ADD to create a layer'));
+  // empty space below the last track (pannable, keeps the grid going)
+  inner.append(h('div', { class: 'tl-row tl-pad', 'data-testid': 'tl-pad', style: { height: Math.max(44, Math.round(tl.clientHeight * 0.45)) + 'px' } },
+    h('div', { class: 'tl-label pad' }), h('div', { class: 'tl-track pad', onclick: () => S.sel && deselect() })));
+  inner.append(h('div', { class: 'tl-past', id: 'tlPast' }));
   inner.append(h('div', { id: 'playhead' }, h('span')));
   const sl = tl.scrollLeft, st = tl.scrollTop;
   tl.replaceChildren(inner); tl.scrollLeft = sl; tl.scrollTop = st;
-  movePlayhead(); G.updBars?.();
+  placeEnd(); movePlayhead(); G.updBars?.();
 }
 const scrubAt = (el, clientX) => seek((clientX - el.getBoundingClientRect().left) / S.pps);
 function bindScrub(el) {
@@ -356,31 +409,71 @@ function bindDrag(el, spec) {
   el.addEventListener('pointerdown', e => {
     if (e.pointerType !== 'mouse') return;
     e.stopPropagation(); el.setPointerCapture(e.pointerId);
-    const x0 = e.clientX; let moved = false; const ctx = onStart?.(e) || {};
-    const mv = ev => { const dx = ev.clientX - x0; if (Math.abs(dx) > 3) moved = true; if (moved) onMove(dx / S.pps, ctx, ev); };
-    const up = ev => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); onEnd?.(moved, ctx, ev); };
+    const x0 = e.clientX, sl0 = tl.scrollLeft; let lx = x0, moved = false; const ctx = onStart?.(e) || {};
+    const apply = ev => { const dx = lx - x0 + tl.scrollLeft - sl0; if (Math.abs(dx) > 3) moved = true; if (moved) onMove(dx / S.pps, ctx, ev); };
+    const mv = ev => { lx = ev.clientX; apply(ev); if (moved) autoScroll(lx, () => apply(ev)); };
+    const up = ev => { stopAutoScroll(); el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); onEnd?.(moved, ctx, ev); };
     el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
   });
 }
 
 // ---------------- timeline touch gestures ----------------
 // One controller for every touch/pen pointer on the timeline (touch-action: none, so the browser never scrolls it):
-//  * swipe anywhere (track, labels, clips, keyframes) -> pan x/y with axis lock + momentum
-//  * long press (300ms, <8px) on a clip / trim handle / keyframe -> grab it (visual pop + vibrate), then drag
-//  * touch on an already-selected clip / trim / keyframe -> drag right away (vertical swipe on a selected clip still pans)
-//  * tap -> select (clips/keys) or the normal click (labels, empty track = seek)
-//  * ruler -> scrub; two fingers anywhere -> pinch-zoom time around the fingers
+//  * swipe anywhere (track, labels, clips, keyframes, empty space below / past the end) -> pan x/y with axis lock + momentum;
+//    pan is not clamped to the content: the virtual extent grows to the right and rubber-bands a little left of 0
+//  * long press (300ms, <8px) on a clip / trim handle / keyframe -> grab it (visual pop + vibrate), then drag;
+//    dragging near the left/right edge auto-scrolls the timeline (clips/keys can go past the project end)
+//  * trim handles of the selected clip and the END marker drag right away; clips and keyframes always need the long press
+//  * while a layer is selected, panning is horizontal only (tap empty track space to deselect and unlock vertical)
+//  * tap -> select (clips/keys) or the normal click (labels; empty track = deselect, or seek when nothing is selected)
+//  * ruler -> scrub (END marker on the ruler drags the duration); two fingers anywhere -> pinch-zoom time around the fingers
 const SLOP = 8, HOLD_MS = 300, ZMIN = 12, ZMAX = 800;
-const G = { ptrs: new Map(), g: null, pinch: null, mom: 0, raf: 0, noClick: false };
+const G = { ptrs: new Map(), g: null, pinch: null, mom: 0, raf: 0, noClick: false, extT: 0, panCapT: 0, rb: 0 };
 const tlOriginX = () => LABEL_W() + 12; // content x of t=0
 function zoomTo(pps, clientX, anchorT) {
   pps = Math.max(ZMIN, Math.min(ZMAX, pps));
   const r = tl.getBoundingClientRect(), vx = clientX - r.left;
   const t = anchorT ?? (vx + tl.scrollLeft - tlOriginX()) / S.pps;
   S.autoFit = false; S.pps = pps; renderTimeline();
-  tl.scrollLeft = tlOriginX() + t * pps - vx;
+  const x = Math.max(0, tlOriginX() + t * pps - vx);
+  if (x > tl.scrollWidth - tl.clientWidth) roomFor(x, false);
+  tl.scrollLeft = x;
 }
 function stopMomentum() { cancelAnimationFrame(G.mom); G.mom = 0; }
+// rubber band left of t=0: the time content (ruler, tracks, grid, playhead) is translated by --rb with resistance
+function setRb(v) { G.rb = v; const inner = $('#tlInner'); if (inner) { inner.classList.remove('rb-back'); inner.classList.toggle('rb', v > 0); inner.style.setProperty('--rb', v + 'px'); } }
+function releaseRb() {
+  if (!G.rb) return; const inner = $('#tlInner'); G.rb = 0;
+  if (!inner) return; inner.classList.add('rb-back'); inner.style.setProperty('--rb', '0px');
+  setTimeout(() => { if (!G.rb) inner.classList.remove('rb-back', 'rb'); }, 380);
+}
+function panX(x) {
+  if (x < 0) { tl.scrollLeft = 0; const d = -x; setRb(Math.min(120, d * 0.5 / (1 + d / 400))); return; }
+  if (G.rb) setRb(0);
+  if (x > tl.scrollWidth - tl.clientWidth) roomFor(x, true);
+  tl.scrollLeft = x;
+}
+// edge auto-scroll while dragging a clip / trim / keyframe / END marker
+const AS = { raf: 0, x: 0, fn: null, ts: 0 };
+function edgeK(x) {
+  const r = tl.getBoundingClientRect(), E = Math.min(56, r.width * 0.12), lo = r.left + LABEL_W(), hi = r.right;
+  if (x > hi - E) return Math.min(1, (x - (hi - E)) / E);
+  if (x < lo + E) return -Math.min(1, (lo + E - x) / E);
+  return 0;
+}
+function autoScroll(x, fn) { AS.x = x; AS.fn = fn; if (!AS.raf) { AS.ts = performance.now(); AS.raf = requestAnimationFrame(asStep); } }
+function asStep(ts) {
+  AS.raf = 0; if (!AS.fn) return;
+  const k = edgeK(AS.x); if (!k) return;
+  const dt = Math.min(0.1, Math.max(0, (ts - AS.ts) / 1000)); AS.ts = ts;
+  const v = Math.sign(k) * (180 + 1300 * k * k) * dt; // time-based: 180..1480 px/s deeper into the edge zone
+  const before = tl.scrollLeft, target = Math.max(0, before + v);
+  if (v > 0 && target > tl.scrollWidth - tl.clientWidth) roomFor(target, false);
+  tl.scrollLeft = target;
+  if (tl.scrollLeft !== before) AS.fn();
+  AS.raf = requestAnimationFrame(asStep);
+}
+function stopAutoScroll() { cancelAnimationFrame(AS.raf); AS.raf = 0; AS.fn = null; }
 function startMomentum(g) {
   const s = g.samples, b = s[s.length - 1], now = performance.now();
   const a = s.find(q => b.t - q.t <= 100) || s[0], dt = b.t - a.t;
@@ -399,12 +492,12 @@ function startMomentum(g) {
   G.mom = requestAnimationFrame(step);
 }
 function grab(g, x) {
-  g.mode = 'drag'; g.gx = x; g.ctx = g.spec.onStart?.({ target: g.target, clientX: x }) || {};
+  g.mode = 'drag'; g.gx = x; g.gsl = tl.scrollLeft; g.ctx = g.spec.onStart?.({ target: g.target, clientX: x }) || {};
   g.item.classList.add('grabbed'); tl.classList.add('grabbing');
   try { navigator.vibrate?.(12); } catch {}
 }
 function endDrag(g, ev) {
-  g.item.classList.remove('grabbed'); tl.classList.remove('grabbing');
+  stopAutoScroll(); g.item.classList.remove('grabbed'); tl.classList.remove('grabbing');
   g.spec.onEnd?.(g.moved, g.ctx, ev);
 }
 function pinchState() {
@@ -425,13 +518,14 @@ function bindTimelineGestures() {
       G.noClick = true; return;
     }
     if (G.ptrs.size > 2 || G.pinch) return;
-    const hit = e.target.closest('.kf, .clip, .tl-ruler');
+    const hit = e.target.closest('.kf, .clip, .tl-end-h, .tl-ruler');
     const g = G.g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, sl: tl.scrollLeft, st: tl.scrollTop, mode: 'pending', target: e.target,
       samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }], moved: false };
     if (hit?.classList.contains('tl-ruler')) { g.mode = 'scrub'; g.ruler = hit; if (S.playing) togglePlay(false); scrubAt(hit, e.clientX); return; }
     if (hit?._drag) {
-      g.item = hit; g.spec = hit._drag; g.isKey = hit.classList.contains('kf'); g.isTrim = e.target.classList.contains('trim');
-      g.armed = hit.classList.contains(g.isKey ? 'on' : 'sel');
+      g.item = hit; g.spec = hit._drag; g.isKey = hit.classList.contains('kf'); g.isTrim = e.target.classList.contains('trim') || hit.classList.contains('tl-end-h');
+      // only trim handles of the selected clip and the END marker drag straight away; moving a clip or a keyframe always needs a long press
+      g.armed = (g.isTrim && hit.classList.contains('sel')) || hit.classList.contains('tl-end-h');
       g.hold = setTimeout(() => { if (G.g === g && g.mode === 'pending') { if (S.playing) togglePlay(false); grab(g, g.lx ?? g.x0); } }, HOLD_MS);
     }
   });
@@ -446,7 +540,7 @@ function bindTimelineGestures() {
         const pps = Math.max(ZMIN, Math.min(ZMAX, pz.pps0 * ps.d / pz.d));
         if (Math.abs(pps - S.pps) > 0.01) zoomTo(pps, ps.mx, pz.t);
         else tl.scrollLeft = tlOriginX() + pz.t * S.pps - (ps.mx - tl.getBoundingClientRect().left);
-        tl.scrollTop = pz.st0 - (ps.my - pz.my);
+        if (!S.sel) tl.scrollTop = pz.st0 - (ps.my - pz.my);
       });
       return;
     }
@@ -458,15 +552,15 @@ function bindTimelineGestures() {
     if (g.mode === 'pending') {
       if (Math.hypot(dx, dy) < SLOP) return;
       clearTimeout(g.hold);
-      if (g.item && g.armed && (g.isKey || g.isTrim || Math.abs(dx) >= Math.abs(dy))) { grab(g, g.x0); }
-      else { g.mode = 'pan'; G.noClick = true; const ax = Math.abs(dx), ay = Math.abs(dy); g.axis = ax > 2 * ay ? 'x' : ay > 2 * ax ? 'y' : 'xy'; }
+      if (g.item && g.armed) { grab(g, g.x0); }
+      else { g.mode = 'pan'; G.noClick = true; const ax = Math.abs(dx), ay = Math.abs(dy); g.axis = S.sel ? 'x' : ax > 2 * ay ? 'x' : ay > 2 * ax ? 'y' : 'xy'; } // a selection locks panning to horizontal (Alight)
     }
     if (g.mode === 'pan') {
-      if (g.axis !== 'y') tl.scrollLeft = g.sl - dx;
+      if (g.axis !== 'y') panX(g.sl - dx);
       if (g.axis !== 'x') tl.scrollTop = g.st - dy;
     } else if (g.mode === 'drag') {
-      const ddx = e.clientX - g.gx; if (Math.abs(ddx) > 2) g.moved = true;
-      if (g.moved) g.spec.onMove(ddx / S.pps, g.ctx, e);
+      const apply = () => { const ddx = g.lx - g.gx + tl.scrollLeft - g.gsl; if (Math.abs(ddx) > 2) g.moved = true; if (g.moved) g.spec.onMove(ddx / S.pps, g.ctx, e); };
+      apply(); if (g.moved) autoScroll(e.clientX, apply);
     }
   });
   const up = e => {
@@ -476,7 +570,7 @@ function bindTimelineGestures() {
     const g = G.g; if (!g || g.id !== e.pointerId) return;
     G.g = null; clearTimeout(g.hold);
     if (g.mode === 'drag') { G.noClick = true; endDrag(g, e); }
-    else if (g.mode === 'pan') startMomentum(g);
+    else if (g.mode === 'pan') { if (G.rb) { releaseRb(); if (g.axis !== 'x') startMomentum({ ...g, axis: 'y' }); } else startMomentum(g); }
     else if (g.mode === 'pending' && g.item && e.type === 'pointerup') { G.noClick = true; g.spec.onEnd?.(false, g.spec.onStart?.({ target: g.target, clientX: e.clientX }) || {}, e); }
   };
   tl.addEventListener('pointerup', up); tl.addEventListener('pointercancel', up);
@@ -503,7 +597,7 @@ function bindTimelineGestures() {
 // Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
 function lockPage() {
   const scrollable = t => t.closest?.('#panelBody, dialog, textarea, select, input');
-  document.addEventListener('touchmove', e => { if (e.touches.length > 1 || !scrollable(e.target)) e.preventDefault(); }, { passive: false });
+  document.addEventListener('touchmove', e => { if (e.cancelable && (e.touches.length > 1 || !scrollable(e.target))) e.preventDefault(); }, { passive: false });
   for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
 }
@@ -512,10 +606,12 @@ function bindClip(clip, L) {
   bindDrag(clip, {
     onStart: e => ({ mode: e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm', s0: L.start, e0: L.end, snap: clone(L.keys) }),
     onMove: (dt, c) => {
+      // start never goes below 0; the end may run past the project duration (not rendered there, like Alight)
       if (c.mode === 'l') L.start = Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)));
-      else if (c.mode === 'r') L.end = Math.max(L.start + 0.05, Math.min(P().duration, snapT(c.e0 + dt)));
-      else { const d = snapT(Math.max(-c.s0, Math.min(P().duration - c.e0, dt))); L.keys = clone(c.snap); L.start = c.s0; L.end = c.e0; shiftLayer(L, d); }
-      clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px'; drawFrame();
+      else if (c.mode === 'r') L.end = Math.max(L.start + 0.05, snapT(c.e0 + dt));
+      else { const d = Math.max(-c.s0, snapT(dt)); L.keys = clone(c.snap); L.start = c.s0; L.end = c.e0; shiftLayer(L, d); }
+      clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px';
+      setExtent(L.end + viewT()); drawFrame();
     },
     onEnd: moved => { if (moved) commit(); else { S.sel = L.id; S.selKeys.clear(); if (S.tab === 'add') S.tab = 'layer'; refreshAll(); } },
   });
@@ -523,13 +619,25 @@ function bindClip(clip, L) {
 function bindKey(d, L, list) {
   bindDrag(d, {
     onStart: () => ({ t0: list[0].k.t }),
-    onMove: (dt, c) => { const nt = snapT(Math.max(0, Math.min(P().duration, c.t0 + dt))); for (const { k } of list) k.t = nt; d.style.left = nt * S.pps + 'px'; },
+    onMove: (dt, c) => { const nt = Math.max(0, snapT(c.t0 + dt)); for (const { k } of list) k.t = nt; d.style.left = nt * S.pps + 'px'; setExtent(nt + viewT()); },
     onEnd: (moved, c, ev) => {
       S.sel = L.id;
       if (moved) { for (const p of new Set(list.map(x => x.prop))) L.keys[p].sort((a, b) => a.t - b.t); }
       else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = list[0].k.t; if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
       commit();
     },
+  });
+}
+
+// END marker: drag to change the project duration (frame-snapped, 0.5s .. 600s)
+function bindEnd(el) {
+  bindDrag(el, {
+    onStart: () => ({ d0: P().duration }),
+    onMove: (dt, c) => {
+      P().duration = Math.max(0.5, Math.min(600, snapT(c.d0 + dt)));
+      placeEnd(); setExtent(P().duration + viewT()); $('#dur').textContent = tc(P().duration);
+    },
+    onEnd: moved => { if (!moved) return; S.autoFit = false; if (S.t > P().duration) S.t = P().duration; commit(); },
   });
 }
 
@@ -595,8 +703,8 @@ function panelLayer(L) {
     out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
   }
   out.append(section('Timing',
-    slider({ label: 'In', value: L.start, min: 0, max: P().duration, step: 0.01, onInput: liveSet(v => { L.start = Math.min(v, L.end - 0.05); }), onChange: () => commit() }),
-    slider({ label: 'Out', value: L.end, min: 0, max: P().duration, step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
+    slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.start = Math.min(v, L.end - 0.05); }), onChange: () => commit() }),
+    slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
   const act = (ic, label, fn, tid) => h('button', { class: 'act', onclick: fn, 'data-testid': tid }, icon(ic), label);
   const ix = P().layers.indexOf(L);
   out.append(h('div', { class: 'acts' },
@@ -758,7 +866,7 @@ function panelProject() {
   const out = h('div', {});
   out.append(section('Canvas', chips(Object.keys(ASPECTS).map(a => [a, a, 'aspect-' + a]), p.aspect, v => changeAspect(v)),
     select({ label: 'FPS', value: String(p.fps), options: [['24', '24'], ['25', '25'], ['30', '30'], ['60', '60']], onChange: v => { p.fps = +v; commit(); } }),
-    slider({ label: 'Duration', value: p.duration, min: 1, max: 60, step: 0.5, testid: 'duration', onInput: v => { p.duration = v; }, onChange: v => { p.duration = v; p.layers.forEach(L => { if (L.end > v) L.end = v; if (L.start >= v) L.start = Math.max(0, v - 0.5); }); S.t = Math.min(S.t, v); commit(); } }),
+    slider({ label: 'Duration', value: p.duration, min: 1, max: 60, step: 0.5, testid: 'duration', onInput: v => { p.duration = v; }, onChange: v => { p.duration = v; S.t = Math.min(S.t, v); commit(); } }), // clips are not clamped: anything past the end just isn't rendered
     color({ label: 'Background', value: p.bg, onInput: liveSet(v => (p.bg = v)), onChange: v => { p.bg = v; commit(); } })));
   out.append(section('Project', h('div', { class: 'acts' },
     h('button', { class: 'act', onclick: openProjects, 'data-testid': 'open-projects' }, icon('menu'), 'Projects'),

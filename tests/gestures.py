@@ -67,7 +67,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v3', "'kntc-v3'" in sw)
+        check('service worker cache bumped to kntc-v4', "'kntc-v4'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4): pg.click('[data-testid=add-rect]') if P('__app.S.tab') == 'add' else (pg.click('[data-testid=tab-add]'), pg.click('[data-testid=add-rect]'))
@@ -127,12 +127,11 @@ def main():
         check('grab feedback cleared after release', not P("!!document.querySelector('.grabbed')"))
         P("__app.S.sel = null; __app.S.selKeys.clear(); __app.refreshAll()"); pg.wait_for_timeout(100)
 
-        # 6. selected clip: horizontal drag moves immediately (no long press needed)
+        # 6. selected clip: a quick drag pans (never moves it); moving still needs the long press
         P(f"__app.S.sel = '{L0['id']}'; __app.refreshAll()"); pg.wait_for_timeout(100); reset_scroll()
         Lb = layer(ki); cpt = P(FIND, ['.clip.sel', None])
-        gesture([(cpt['x'], cpt['y'], cpt['x'] - 40, cpt['y'])], steps=8); pg.wait_for_timeout(150)
-        La = layer(ki)
-        check('already-selected clip drags immediately', La['start'] < Lb['start'] - 0.1, (Lb['start'], La['start']))
+        gesture([(cpt['x'], cpt['y'], cpt['x'] - 40, cpt['y'])], steps=8); pg.wait_for_timeout(400); settle()
+        check('quick drag on a selected clip pans and does not move it', layer(ki) == Lb and P(STATE)['sl'] > 20, (Lb['start'], layer(ki)['start'], P(STATE)['sl']))
         P("__app.S.sel = null; __app.S.selKeys.clear(); __app.refreshAll()"); pg.wait_for_timeout(100)
 
         # 7. keyframes: 44px hit box, swipe pans, long press drags
@@ -143,6 +142,12 @@ def main():
         gesture([(kpt['x'], kpt['y'], kpt['x'] - 120, kpt['y'])], steps=12, dt=20); pg.wait_for_timeout(400)
         s7 = P(STATE); Lk2 = layer(ki)
         check('swipe starting on a keyframe pans, keyframe stays', s7['sl'] >= 80 and Lk2 == Lk, (s7['sl'], Lk['keys'], Lk2['keys']))
+        reset_scroll(); P("__app.S.sel = null; __app.S.selKeys.clear(); __app.refreshAll()"); pg.wait_for_timeout(100)
+        # a selected (on) keyframe still needs the long press: a quick drag pans
+        P(f"__app.S.sel = '{Lk['id']}'; __app.S.selKeys.clear(); __app.project.layers[{ki}].keys.scale.forEach(k => __app.S.selKeys.add(k.id)); __app.refreshAll()"); pg.wait_for_timeout(100)
+        kon = P(FIND, ['.kf.on', Lk['id']])
+        gesture([(kon['x'], kon['y'], kon['x'] - 50, kon['y'])], steps=8); pg.wait_for_timeout(400); settle()
+        check('quick drag on a selected keyframe pans, does not move it', layer(ki) == Lk and P(STATE)['sl'] > 20, (layer(ki)['keys'], P(STATE)['sl']))
         reset_scroll(); P("__app.S.sel = null; __app.S.selKeys.clear(); __app.refreshAll()"); pg.wait_for_timeout(100)
         kpt = P(FIND, ['.kf', Lk['id']])
         touch('touchStart', [(kpt['x'], kpt['y'])]); pg.wait_for_timeout(420)
@@ -190,6 +195,119 @@ def main():
         pg.wait_for_timeout(300); s11 = P(STATE)
         check('page scroll position stays 0 after swipes on app chrome', s11['wy'] == 0 and s11['wx'] == 0 and s11['de'] == 0 and s11['bt'] == 0 and s11['app'] == 0, s11)
         pg.screenshot(path=f'{SHOTS}/iphone-11-gestures.png')
+
+        # ---------- virtual timeline (pan past the end, empty space, rubber band, auto-scroll, END marker) ----------
+        P("__app.S.sel = null; __app.S.selKeys.clear(); __app.S.autoFit = false; __app.S.pps = 100; __app.refreshAll()"); pg.wait_for_timeout(150); reset_scroll()
+        tlb = pg.locator('#tlScroll').bounding_box(); R = tlb['x'] + tlb['width']
+        VIS = """() => { const tl = document.getElementById('tlScroll'), S = __app.S, o = (innerWidth < 600 ? 84 : 120) + 12;
+          return { l: tl.scrollLeft / S.pps, r: (tl.scrollLeft + tl.clientWidth - o) / S.pps, dur: __app.project.duration, sw: tl.scrollWidth }; }"""
+        v0 = P(VIS)
+        check('extent covers project end + >= 1 screen at rest', P("document.getElementById('tlInner').offsetWidth") >= 96 + (v0['dur'] + 3.4) * 100, P("document.getElementById('tlInner').offsetWidth"))
+        # empty track point (not on a clip/key) in the given layer row
+        EMPTY = """([id, xmin]) => { const row = document.querySelector(`.tl-row[data-layer="${id}"] .tl-track`); const r = row.getBoundingClientRect(), y = r.top + r.height / 2;
+          const tl = document.getElementById('tlScroll').getBoundingClientRect();
+          for (const yy of [y, r.top + 2, r.bottom - 2]) for (let x = Math.max(xmin, tl.left + 100); x < tl.right - 70; x += 4) { const h = document.elementFromPoint(x, yy); if (h === row) return { x, y: yy }; } return null; }"""
+        rows = P("__app.project.layers.map(l => l.id)")
+        ept = P(EMPTY, [rows[0], 0])
+        for _ in range(4):
+            gesture([(R - 70, ept['y'], tlb['x'] + 110, ept['y'])], steps=14, dt=24); pg.wait_for_timeout(120); settle()
+        v1 = P(VIS)
+        check('panning past the project end works (whole view beyond the end)', v1['l'] > v1['dur'] and v1['r'] > v1['dur'] + 3, v1)
+        check('extent grows dynamically while panning', v1['sw'] > v0['sw'], (v0['sw'], v1['sw']))
+        pg.screenshot(path=f'{SHOTS}/iphone-12-past-end.png')
+        check('past-end region shaded with END marker', P("(() => { const a = document.getElementById('tlPast').getBoundingClientRect(); return a.width > 200 && getComputedStyle(document.getElementById('tlPast')).borderLeftStyle === 'solid' && !!document.querySelector('[data-testid=end-marker]'); })()"))
+        check('ruler ticks continue past the end', P("[...document.querySelectorAll('.tl-ruler i.maj')].some(i => parseInt(i.textContent) > __app.project.duration + 3)"))
+        # swipe starting in the shaded past-end area pans both ways (nothing selected)
+        P("document.getElementById('tlScroll').scrollLeft = 400"); pg.wait_for_timeout(60)
+        endx = P("document.getElementById('tlPast').getBoundingClientRect().left")
+        ppt = P(EMPTY, [rows[1], endx + 20])
+        sA = P(STATE); gesture([(ppt['x'], ppt['y'], ppt['x'] - 120, ppt['y'])], steps=10, dt=20); pg.wait_for_timeout(100); settle(); sB = P(STATE)
+        check('swipe starting past the project end pans horizontally', sB['sl'] > sA['sl'] + 80, (sA['sl'], sB['sl'], ppt, endx))
+        gesture([(ppt['x'], ppt['y'], ppt['x'], ppt['y'] - 100)], steps=10, dt=20); pg.wait_for_timeout(100); settle()
+        check('swipe starting past the project end pans vertically', P(STATE)['st'] > 30, P(STATE)['st'])
+        # empty space below the last track
+        P("(() => { const t = document.getElementById('tlScroll'); t.scrollTop = t.scrollHeight; t.scrollLeft = 0; })()"); pg.wait_for_timeout(60)
+        pad = P("(() => { const r = document.querySelector('[data-testid=tl-pad] .tl-track').getBoundingClientRect(), tl = document.getElementById('tlScroll').getBoundingClientRect(); return { x: tl.left + 260, y: Math.min(r.bottom, tl.bottom) - 12, top: r.top }; })()")
+        sA = P(STATE); gesture([(pad['x'], pad['y'], pad['x'] - 150, pad['y'])], steps=10, dt=20); pg.wait_for_timeout(100); settle(); sB = P(STATE)
+        check('swipe from empty space below the tracks pans horizontally', sB['sl'] > 100, (sA, sB, pad))
+        gesture([(pad['x'], pad['y'], pad['x'], pad['y'] + 120)], steps=10, dt=20); pg.wait_for_timeout(100); settle()
+        check('swipe from empty space below the tracks pans vertically', P(STATE)['st'] < sB['st'] - 40, (sB['st'], P(STATE)['st']))
+        # rubber band left of 0
+        reset_scroll(); ept = P(EMPTY, [rows[0], 0])
+        gesture([(ept['x'], ept['y'], ept['x'] + 150, ept['y'])], steps=10, dt=20, end=False)
+        rb = P("parseFloat(document.getElementById('tlInner').style.getPropertyValue('--rb'))")
+        touch('touchEnd', []); pg.wait_for_timeout(600)
+        rb2 = P("parseFloat(document.getElementById('tlInner').style.getPropertyValue('--rb'))")
+        check('pan left of 0 rubber-bands and springs back to 0', rb > 20 and rb2 == 0 and P(STATE)['sl'] == 0, (rb, rb2))
+
+        # selection locks panning to horizontal; tap empty space deselects and restores vertical
+        reset_scroll(); P(f"__app.S.sel = '{L0['id']}'; __app.refreshAll()"); pg.wait_for_timeout(100)
+        Lb = layer(ki); cpt = P(FIND, ['.clip.sel', None])
+        gesture([(cpt['x'], cpt['y'], cpt['x'] + 3, cpt['y'] - 120)], steps=10, dt=20); pg.wait_for_timeout(300); settle()
+        check('selected: vertical swipe does not scroll vertically', P(STATE)['st'] == 0 and layer(ki) == Lb, P(STATE))
+        ept = P(EMPTY, [rows[0], 0])
+        gesture([(ept['x'] + 120, ept['y'], ept['x'] - 20, ept['y'] - 60)], steps=10, dt=20); pg.wait_for_timeout(300); settle(); sS = P(STATE)
+        check('selected: diagonal/horizontal swipe pans horizontally only', sS['sl'] > 80 and sS['st'] == 0 and sS['sel'] == L0['id'], sS)
+        reset_scroll(); cpt = P(FIND, ['.clip.sel', None])
+        touch('touchStart', [(cpt['x'], cpt['y'])]); pg.wait_for_timeout(420)
+        for i in range(1, 11): touch('touchMove', [(cpt['x'] + 6 * i, cpt['y'] + 4 * i)]); pg.wait_for_timeout(16)
+        touch('touchEnd', []); pg.wait_for_timeout(200); La = layer(ki)
+        check('selected: long press + drag moves the clip in time only', abs((La['start'] - Lb['start']) - 0.6) < 0.06 and P(STATE)['st'] == 0 and P(STATE)['sl'] == 0, (Lb['start'], La['start']))
+        ept = P(EMPTY, [rows[0], 0]); tap(ept['x'], ept['y'])
+        check('tap on empty track space deselects', P('__app.S.sel') is None, P('__app.S.sel'))
+        gesture([(ept['x'], ept['y'], ept['x'] + 3, ept['y'] - 120)], steps=10, dt=20); pg.wait_for_timeout(300); settle()
+        check('after deselect, vertical panning works again', P(STATE)['st'] > 30, P(STATE)['st'])
+
+        # long press + drag a clip into the right edge -> auto-scroll; end goes past the duration
+        snap = P(f"JSON.stringify(__app.project.layers[{ki}])")
+        reset_scroll(); Lb = layer(ki); cpt = P(FIND, ['.clip', L0['id']]); dur = P('__app.project.duration')
+        touch('touchStart', [(cpt['x'], cpt['y'])]); pg.wait_for_timeout(420)
+        for i in range(1, 13): touch('touchMove', [(cpt['x'] + (R - 10 - cpt['x']) * i / 12, cpt['y'])]); pg.wait_for_timeout(16)
+        pg.wait_for_timeout(900); sAS = P(STATE); Lm = layer(ki)
+        touch('touchEnd', []); pg.wait_for_timeout(200); La = layer(ki)
+        check('dragging a clip at the right edge auto-scrolls the timeline', sAS['sl'] > 300, sAS['sl'])
+        check('clip follows the auto-scroll past the project end (not clamped)', La['end'] > dur + 1 and La['start'] > Lb['start'] + 2, (dur, La['start'], La['end']))
+        # and back to the left edge: auto-scrolls left, start stops at 0
+        settle(); P(f"document.getElementById('tlScroll').scrollLeft = 96 + __app.project.layers[{ki}].start * __app.S.pps - 180"); pg.wait_for_timeout(80); sAS = P(STATE)
+        cpt2 = P(FIND, ['.clip', L0['id']])
+        if cpt2:
+            touch('touchStart', [(cpt2['x'], cpt2['y'])]); pg.wait_for_timeout(420)
+            g2 = P("!!document.querySelector('.clip.grabbed')")
+            for i in range(1, 13): touch('touchMove', [(cpt2['x'] + (tlb['x'] + 90 - cpt2['x']) * i / 12, cpt2['y'])]); pg.wait_for_timeout(16)
+            for _ in range(60):
+                if P(STATE)['sl'] == 0: break
+                pg.wait_for_timeout(100)
+            pg.wait_for_timeout(200); touch('touchEnd', []); pg.wait_for_timeout(200)
+        check('dragging to the left edge auto-scrolls back; start clamps at 0', cpt2 and layer(ki)['start'] == 0 and P(STATE)['sl'] < sAS['sl'] - 200, (layer(ki)['start'], P(STATE)['sl'], cpt2, cpt2 and g2))
+        P(f"(s => {{ __app.project.layers[{ki}] = JSON.parse(s); __app.S.sel = null; __app.S.selKeys.clear(); __app.commit(); }})", snap); pg.wait_for_timeout(150)
+
+        # keyframe long press + drag beyond the current view (auto-scroll)
+        reset_scroll(); Lk = layer(ki); kpt = P(FIND, ['.kf', Lk['id']])
+        touch('touchStart', [(kpt['x'], kpt['y'])]); pg.wait_for_timeout(420)
+        for i in range(1, 13): touch('touchMove', [(kpt['x'] + (R - 10 - kpt['x']) * i / 12, kpt['y'])]); pg.wait_for_timeout(16)
+        pg.wait_for_timeout(700); touch('touchEnd', []); pg.wait_for_timeout(200)
+        Lk2 = layer(ki); kmax = max(max(v) for v in Lk2['keys'].values())
+        check('keyframe dragged past the visible area with auto-scroll', kmax > (R - tlb['x'] - 96) / 100 + 1 and P(STATE)['sl'] > 200, (Lk['keys'], Lk2['keys'], P(STATE)['sl']))
+        P("__app.S.sel = null; __app.S.selKeys.clear(); __app.refreshAll()")
+
+        # END marker on the ruler drags the duration
+        P("document.getElementById('tlScroll').scrollLeft = 400"); pg.wait_for_timeout(60); dur0 = P('__app.project.duration')
+        eb = P("(() => { const r = document.querySelector('[data-testid=end-marker]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()")
+        gesture([(eb['x'], eb['y'], eb['x'] + 60, eb['y'])], steps=10); pg.wait_for_timeout(200)
+        check('dragging the END marker changes the duration', abs(P('__app.project.duration') - (dur0 + 0.6)) < 0.05, (dur0, P('__app.project.duration')))
+        P(f"__app.project.duration = {dur0}; __app.commit()"); pg.wait_for_timeout(100)
+        P("__app.seek(1000)"); check('playhead/playback stays within the duration', P('__app.S.t') == dur0, P('__app.S.t'))
+
+        # trim the selected clip's end past the duration (direct drag on the handle + auto-scroll), then save & reload
+        reset_scroll(); P(f"__app.S.sel = '{L0['id']}'; __app.refreshAll()"); pg.wait_for_timeout(100)
+        P("(() => { const t = document.getElementById('tlScroll'); const c = document.querySelector('.clip.sel').getBoundingClientRect(); t.scrollLeft += c.right - t.getBoundingClientRect().left - 250; })()"); pg.wait_for_timeout(60); slT = P(STATE)['sl']
+        tr = P("(() => { const r = document.querySelector('.clip.sel').getBoundingClientRect(); return { x: r.right - 6, y: r.top + r.height / 2 }; })()")
+        gesture([(tr['x'], tr['y'], R - 8, tr['y'])], steps=10, end=False); pg.wait_for_timeout(700); touch('touchEnd', []); pg.wait_for_timeout(200)
+        Lt = layer(ki)
+        check('trimming the end past the duration works (with auto-scroll)', Lt['end'] > dur0 + 1 and P(STATE)['sl'] > slT + 100, (dur0, Lt['end']))
+        pg.wait_for_timeout(700); pg.reload(); pg.wait_for_function('window.__app && __app.project'); pg.wait_for_timeout(500)
+        Lr = P(f"(() => {{ const L = __app.project.layers.find(l => l.id === '{L0['id']}'); return L && {{ start: L.start, end: L.end }}; }})()")
+        check('clip end beyond the duration persists after save/reload', Lr and abs(Lr['end'] - Lt['end']) < 1e-6 and Lr['end'] > P('__app.project.duration'), (Lt['end'], Lr, P('__app.project.duration')))
         check('no page errors', not [e for e in errs if 'GL Driver' not in e], errs[:5])
         b.close()
 
