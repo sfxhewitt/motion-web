@@ -1,4 +1,4 @@
-import { newProject, makeLayer, ASPECTS, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect } from './effects.js';
 import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
@@ -738,7 +738,7 @@ function bindTimelineGestures() {
 }
 // Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
 function lockPage() {
-  const scrollable = t => t.closest?.('#panelBody, .tiles, .sh-body, .h-list, dialog, textarea, select, input');
+  const scrollable = t => t.closest?.('#panelBody, .tiles, .sh-body, .h-scroll, .h-pills, .cr-body, dialog, textarea, select, input');
   document.addEventListener('touchmove', e => { if (e.cancelable && (e.touches.length > 1 || !scrollable(e.target))) e.preventDefault(); }, { passive: false });
   for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
   window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
@@ -1048,7 +1048,8 @@ function panelProject() {
   const p = P();
   const out = h('div', {});
   out.append(section('Canvas', chips(Object.keys(ASPECTS).map(a => [a, a, 'aspect-' + a]), p.aspect, v => changeAspect(v)),
-    select({ label: 'FPS', value: String(p.fps), options: [['24', '24'], ['25', '25'], ['30', '30'], ['60', '60']], onChange: v => { p.fps = +v; commit(); } }),
+    select({ label: 'Resolution', value: String(Math.min(p.w, p.h)), testid: 'proj-res', options: RESOLUTIONS.map(([v, t]) => [String(v), t]).concat(RESOLUTIONS.some(r => r[0] === Math.min(p.w, p.h)) ? [] : [[String(Math.min(p.w, p.h)), Math.min(p.w, p.h) + 'p']]), onChange: v => changeResolution(+v) }),
+    select({ label: 'FPS', value: String(p.fps), testid: 'proj-fps', options: [['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { p.fps = +v; commit(); } }),
     slider({ label: 'Duration', value: p.duration, min: 1, max: 60, step: 0.5, testid: 'duration', onInput: v => { p.duration = v; }, onChange: v => { p.duration = v; S.t = Math.min(S.t, v); commit(); } }), // clips are not clamped: anything past the end just isn't rendered
     color({ label: 'Background', value: p.bg, onInput: liveSet(v => (p.bg = v)), onChange: v => { p.bg = v; commit(); } })));
   out.append(section('Project', h('div', { class: 'acts' },
@@ -1215,8 +1216,17 @@ function bezierEditor(ease, onCommit) {
   return h('div', { class: 'bezwrap' }, cv);
 }
 
+function changeResolution(short) {
+  const p = P(); const [w, hh] = sizeFor(p.aspect, short); const k = w / p.w;
+  if (!isFinite(k) || k === 1) return;
+  for (const L of p.layers) {
+    L.props.x *= k; L.props.y *= k; (L.keys.x || []).forEach(q => (q.v *= k)); (L.keys.y || []).forEach(q => (q.v *= k));
+    L.props.scale *= k; (L.keys.scale || []).forEach(q => (q.v *= k));
+  }
+  p.w = w; p.h = hh; commit();
+}
 function changeAspect(a) {
-  const p = P(); const [w, hh] = ASPECTS[a]; const sx = w / p.w, sy = hh / p.h;
+  const p = P(); const [w, hh] = sizeFor(a, Math.min(p.w, p.h)); const sx = w / p.w, sy = hh / p.h;
   for (const L of p.layers) {
     L.props.x *= sx; L.props.y *= sy;
     (L.keys.x || []).forEach(k => (k.v *= sx)); (L.keys.y || []).forEach(k => (k.v *= sy));
@@ -1225,37 +1235,149 @@ function changeAspect(a) {
 }
 
 
-// ---------------- home (project list) ----------------
+// ---------------- home (project list, light theme like Alight's home screen) ----------------
+const fmtDur = d => { const cs = Math.round(d * 100), sec = Math.floor(cs / 100); return `${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}:${pad2(cs % 100)}`; };
+const fmtBytes = n => (n >= 1048576 ? (n / 1048576).toFixed(1) + 'mb' : n >= 1024 ? (n / 1024).toFixed(1) + 'kb' : n + 'b');
 function thumbFor(p) {
-  const c = document.createElement('canvas'), k = 96 / Math.max(p.w, p.h);
+  const c = document.createElement('canvas'), k = 200 / Math.max(p.w, p.h);
   c.width = Math.max(8, Math.round(p.w * k)); c.height = Math.max(8, Math.round(p.h * k));
-  try { new Renderer().render(p, Math.min(1.5, p.duration / 2), c); } catch {}
+  try { THUMB.r = THUMB.r || new Renderer(); THUMB.r.render(p, Math.min(1.5, p.duration / 2), c); } catch {} // one shared renderer: a WebGL context per thumbnail would exhaust the browser's context limit
   return c;
 }
+function setThemeColor(c) { document.querySelector('meta[name=theme-color]')?.setAttribute('content', c); }
 function showHome() {
   if (S.playing) togglePlay(false);
   if (P()) store.saveProject(P());
+  closeHomeMenu();
   const list = store.listProjects();
+  $('#homeBanner').hidden = localStorage.getItem('kntc.bannerX') === '1';
   $('#homeList').replaceChildren(...(list.length ? list.map(x => {
     const pr = store.loadProject(x.id);
     const open = () => { const q = store.loadProject(x.id); if (q) { setProject(q); hideHome(); } };
+    const th = h('span', { class: 'pc-th' });
+    if (pr) {
+      const c = thumbFor(pr), blur = document.createElement('canvas');
+      blur.width = c.width; blur.height = c.height; blur.getContext('2d').drawImage(c, 0, 0); blur.className = 'pc-blur';
+      th.append(blur, c, h('span', { class: 'pc-dur', 'data-testid': 'home-dur' }, fmtDur(pr.duration)));
+    }
+    const meta = (ic, t, tid) => h('span', { class: 'pc-m', 'data-testid': tid }, icon(ic), t);
     return h('div', { class: 'pcard', 'data-testid': 'home-project' },
-      h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, h('span', { class: 'pc-th' }, pr ? thumbFor(pr) : ''),
-        h('span', { class: 'pc-tx' }, h('b', {}, x.name), h('em', {}, `${x.aspect} · ${pr ? pr.duration.toFixed(1) + 's' : ''} · ${new Date(x.modified).toLocaleDateString()}`))),
-      h('button', { class: 'ib', title: 'Delete', onclick: () => { if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); if (P() && x.id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', 'Project 1')); } showHome(); } } }, icon('dots')));
+      h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, th,
+        h('span', { class: 'pc-tx' }, h('b', { 'data-testid': 'home-name' }, x.name),
+          pr ? h('span', { class: 'pc-meta' }, meta('ratio', pr.aspect, 'meta-ratio'), meta('resbox', Math.min(pr.w, pr.h) + 'p', 'meta-res'),
+            meta('folder', fmtBytes(store.projectBytes(x.id)), 'meta-size'), meta('fps', pr.fps + 'fps', 'meta-fps')) : '')),
+      h('button', { class: 'pc-more', title: 'More', 'aria-label': 'More', 'data-testid': 'home-more', onclick: e => { e.stopPropagation(); openHomeMenu(e.currentTarget, x); } }, icon('dots')));
   }) : [h('div', { class: 'h-empty' }, 'No projects yet. Tap + to create one.')]));
-  $('#home').hidden = false; document.body.classList.add('home-open');
+  $('#home').hidden = false; document.body.classList.add('home-open'); setThemeColor('#f5f5f5');
 }
-function hideHome() { $('#home').hidden = true; document.body.classList.remove('home-open'); requestAnimationFrame(() => { layoutStage(); drawFrame(); renderTimeline(); }); }
+function hideHome() { closeHomeMenu(); $('#home').hidden = true; document.body.classList.remove('home-open'); setThemeColor('#191b27'); requestAnimationFrame(() => { layoutStage(); drawFrame(); renderTimeline(); }); }
+let homeMenu = null;
+function closeHomeMenu() { if (homeMenu) { homeMenu.remove(); homeMenu = null; } }
+function openHomeMenu(btn, x) {
+  closeHomeMenu();
+  const act = (ic, t, tid, fn, cls = '') => h('button', { class: cls, 'data-testid': tid, onclick: () => { closeHomeMenu(); fn(); } }, icon(ic), t);
+  homeMenu = h('div', { class: 'h-menu', 'data-testid': 'home-menu' },
+    act('rename', 'Rename', 'home-rename', () => renameProject(x.id)),
+    act('dup', 'Duplicate', 'home-duplicate', () => duplicateProject(x.id)),
+    act('trash', 'Delete', 'home-delete', () => deleteProjectUI(x.id), 'danger'));
+  const r = btn.getBoundingClientRect();
+  homeMenu.style.right = Math.max(8, innerWidth - r.right) + 'px';
+  $('#home').append(homeMenu);
+  const below = r.bottom + 4 + homeMenu.offsetHeight < innerHeight - 90;
+  homeMenu.style.top = (below ? r.bottom + 4 : r.top - 4 - homeMenu.offsetHeight) + 'px';
+}
+function renameProject(id) {
+  const q = store.loadProject(id); if (!q) return;
+  const inp = h('input', { class: 'h-input', value: q.name, 'data-testid': 'rename-input', maxlength: 60 });
+  const save = () => { const v = inp.value.trim(); if (v) { q.name = v; store.saveProject(q); if (P() && P().id === id) P().name = v; } dlg.close(); showHome(); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  openDialog('Rename project', h('div', { class: 'plist' }, inp, h('button', { class: 'primary wide', onclick: save, 'data-testid': 'rename-save' }, 'Save')));
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+function duplicateProject(id) {
+  const q = store.loadProject(id); if (!q) return;
+  const c = clone(q); c.id = uid(); c.name = q.name + ' copy'; c.created = Date.now();
+  store.saveProject(c); if (P()) store.saveProject(P()); // keep the open project as the "last" one
+  showHome(); toast('Project duplicated');
+}
+function deleteProjectUI(id) {
+  const x = store.listProjects().find(v => v.id === id); if (!x || !confirm('Delete ' + x.name + '?')) return;
+  store.deleteProject(id);
+  if (P() && id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', nextProjectName(), { res: 1080, bg: BG_PRESETS[0][0] })); }
+  showHome();
+}
 function openHomeSettings() {
   openDialog('Settings', h('div', { class: 'plist' },
     h('button', { class: 'act wide', onclick: () => { dlg.close(); $('#fileJson').click(); } }, icon('up'), 'Import project (.json)'),
     h('div', { class: 'hint small' }, 'KINETIC saves projects on this device. Add it to the Home Screen from Safari’s share menu for full-screen use.')));
 }
 
+// ---------------- Create sheet (+ on home): name, ratio, resolution, frame rate, background ----------------
+const BG_PRESETS = [['#d9d9d9', 'Light Grey'], ['#ffffff', 'White'], ['#3a3b44', 'Dark Grey'], ['#000000', 'Black'], ['#05060a', 'Midnight']];
+const CREATE_RATIOS = [['16:9', 56, 30], ['9:16', 31, 54], ['4:5', 36, 45], ['1:1', 36, 36], ['4:3', 50, 37]];
+function nextProjectName() {
+  const names = new Set(store.listProjects().map(x => x.name));
+  let n = store.listProjects().length + 1; while (names.has('Project Name ' + n)) n++;
+  return 'Project Name ' + n;
+}
+function openCreate() {
+  if (dlg.open) dlg.close();
+  const st = { name: nextProjectName(), aspect: '9:16', res: 1080, fps: 30, bg: BG_PRESETS[0][0], cw: 2, ch: 1 };
+  const root = $('#create');
+  const aspect = () => (st.aspect === 'custom' ? `${st.cw}:${st.ch}` : st.aspect);
+  const sizeTx = h('small', { 'data-testid': 'create-size' });
+  const updSize = () => { const [w, hh] = sizeFor(aspect(), st.res); sizeTx.replaceChildren('Composition Size', h('br'), `${w} × ${hh}`); };
+  const name = h('input', { class: 'cr-name', value: st.name, 'aria-label': 'Project name', 'data-testid': 'create-name', maxlength: 60, spellcheck: 'false' });
+  name.oninput = () => (st.name = name.value);
+  const nameRow = h('div', { class: 'cr-namerow' }, name,
+    h('button', { class: 'cr-clear', title: 'Clear', 'aria-label': 'Clear name', 'data-testid': 'create-name-clear', onclick: () => { name.value = st.name = ''; name.focus(); } }, icon('xcircle')));
+  const num = (v, tid, on) => { const i = h('input', { type: 'number', min: 1, max: 99, value: v, inputmode: 'numeric', 'data-testid': tid }); i.oninput = () => { const n = Math.max(1, Math.min(99, Math.round(+i.value) || 1)); on(n); updSize(); }; return i; };
+  const custom = h('div', { class: 'cr-custom', hidden: true, 'data-testid': 'create-custom' }, h('span', {}, 'Custom ratio'),
+    num(st.cw, 'create-custom-w', n => (st.cw = n)), h('b', {}, ':'), num(st.ch, 'create-custom-h', n => (st.ch = n)));
+  const ratioBtns = [];
+  const pickRatio = a => { st.aspect = a; ratioBtns.forEach(b => b.classList.toggle('on', b.dataset.a === a)); custom.hidden = a !== 'custom'; updSize(); };
+  const ratios = h('div', { class: 'cr-ratios' },
+    CREATE_RATIOS.map(([a, w, hh]) => { const b = h('button', { class: 'cr-ratio', 'data-a': a, 'data-testid': 'create-ratio-' + a, style: { width: w + 'px', height: hh + 'px' }, onclick: () => pickRatio(a) }, h('span', {}, a)); ratioBtns.push(b); return b; }),
+    (() => { const b = h('button', { class: 'cr-ratio cr-pen', 'data-a': 'custom', title: 'Custom ratio', 'aria-label': 'Custom ratio', 'data-testid': 'create-ratio-custom', onclick: () => pickRatio('custom') }, icon('pencil')); ratioBtns.push(b); return b; })());
+  const dd = (tid, value, options, onChange, lead) => {
+    const sel = h('select', { 'data-testid': tid }, options.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t)));
+    sel.onchange = () => onChange(sel.value, sel);
+    return h('label', { class: 'cr-dd' }, lead || '', sel, icon('chevd'));
+  };
+  const sw = h('i', { class: 'cr-sw', style: { background: st.bg } });
+  const bgPick = h('input', { type: 'color', value: st.bg, hidden: true, 'data-testid': 'create-bg-color' });
+  const bgOpts = [...BG_PRESETS, ['custom', 'Custom…']];
+  const bgDD = dd('create-bg', st.bg, bgOpts, (v, sel) => {
+    if (v === 'custom') { bgPick.click(); sel.value = BG_PRESETS.some(b => b[0] === st.bg) ? st.bg : 'custom'; return; }
+    st.bg = v; sw.style.background = v;
+  }, sw);
+  bgPick.oninput = () => { st.bg = bgPick.value; sw.style.background = st.bg; const sel = bgDD.querySelector('select'); const o = sel.querySelector('option[value=custom]'); o.textContent = 'Custom ' + st.bg; sel.value = 'custom'; };
+  const row = (label, sub, ctl) => h('div', { class: 'cr-row' }, h('div', { class: 'cr-lab' }, h('b', {}, label), sub || ''), ctl);
+  const close = () => { root.classList.remove('show'); setTimeout(() => { if (!root.classList.contains('show')) root.hidden = true; }, 220); };
+  const go = () => {
+    const p = newProject(aspect(), (st.name || '').trim() || nextProjectName(), { res: st.res, fps: st.fps, bg: st.bg });
+    root.classList.remove('show'); root.hidden = true;
+    setProject(p); hideHome(); toast('Created ' + p.name);
+  };
+  root.replaceChildren(h('div', { class: 'cr-dim', onclick: close }),
+    h('div', { class: 'cr-sheet', role: 'dialog', 'aria-label': 'Create' },
+      h('div', { class: 'cr-head' }, h('button', { class: 'cr-x', title: 'Close', 'aria-label': 'Close', 'data-testid': 'create-close', onclick: close }, icon('close')), h('h2', {}, 'Create')),
+      h('div', { class: 'cr-body' },
+        h('div', { class: 'cr-seg' }, h('button', { class: 'on', 'data-testid': 'create-seg-project' }, 'Project'),
+          h('button', { 'data-testid': 'create-seg-element', onclick: () => toast('Elements: coming soon') }, 'Element', icon('info'))),
+        nameRow, ratios, custom,
+        row('Resolution', sizeTx, dd('create-res', st.res, RESOLUTIONS, v => { st.res = +v; updSize(); })),
+        row('Frame Rate', '', dd('create-fps', st.fps, [24, 25, 30, 48, 50, 60].map(f => [f, f + ' fps']), v => (st.fps = +v))),
+        row('Background', '', bgDD), bgPick,
+        h('button', { class: 'cr-go', 'data-testid': 'create-go', onclick: go }, 'Create from scratch'))));
+  pickRatio(st.aspect);
+  root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
+}
+
 // ---------------- dialogs ----------------
 const dlg = $('#dlg');
 function openDialog(title, body) {
+  dlg.classList.toggle('light', document.body.classList.contains('home-open'));
   dlg.replaceChildren(h('div', { class: 'dlg-h' }, h('b', {}, title), h('button', { class: 'mini', onclick: () => dlg.close(), 'data-testid': 'dlg-close' }, icon('close'))), body);
   if (!dlg.open) dlg.showModal();
 }
@@ -1268,13 +1390,7 @@ function openProjects() {
         h('b', {}, x.name), h('em', {}, `${x.aspect} · ${x.layers} layers · ${new Date(x.modified).toLocaleString()}`)),
       h('button', { class: 'mini', title: 'Delete', onclick: () => { if (x.id === P().id) return toast('Open another project first'); if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); openProjects(); } } }, icon('trash'))))));
 }
-function newProjectFlow() {
-  openDialog('New Project', h('div', { class: 'plist' },
-    h('div', { class: 'hint' }, 'Pick an aspect ratio'),
-    h('div', { class: 'grid' }, Object.entries(ASPECTS).map(([a, [w, hh]]) =>
-      h('button', { class: 'add-btn aspect', 'data-testid': 'new-' + a, onclick: () => { const p = newProject(a, 'Project ' + (store.listProjects().length + 1)); setProject(p); dlg.close(); hideHome(); } },
-        h('i', { style: { aspectRatio: `${w}/${hh}` } }), h('span', {}, a))))));
-}
+function newProjectFlow() { openCreate(); }
 async function exportJSON() {
   const p = clone(P()); p.media = {};
   for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
@@ -1301,7 +1417,7 @@ function download(blob, name) {
 function openExport() {
   if (S.playing) togglePlay(false);
   const fm = supportedFormats(); const p = P();
-  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: 1080, fps: p.fps, mbps: 10, audio: true };
+  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: Math.min(p.w, p.h), fps: p.fps, mbps: 10, audio: true };
   const fmtOpts = [['auto', 'Auto'], ['mp4', 'MP4' + (fm.mp4 ? '' : ' ✕')], ['webm', 'WebM' + (fm.webm ? '' : ' ✕')]];
   const info = h('div', { class: 'hint' });
   const upd = () => { const s = exportSize(p, opts.shortSide); info.textContent = `${s.w}×${s.h} · ${opts.fps}fps · ${p.duration}s · ~${(opts.mbps * p.duration / 8).toFixed(1)} MB · renders in real time`; };
@@ -1329,8 +1445,8 @@ function openExport() {
   upd();
   openDialog('Export Video', h('div', { class: 'plist' },
     select({ label: 'Format', value: opts.format, options: fmtOpts, testid: 'export-format', onChange: v => (opts.format = v) }),
-    chips([[480, '480p'], [720, '720p'], [1080, '1080p'], [1440, '1440p'], [2160, '4K']].map(([v, t]) => [v, t]), opts.shortSide, v => { opts.shortSide = v; upd(); }),
-    select({ label: 'FPS', value: String(opts.fps), options: [['24', '24'], ['25', '25'], ['30', '30'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
+    chips([[480, '480p'], [720, '720p'], [1080, '1080p'], [1440, '1440p'], [2160, '4K']].map(([v, t]) => [v, t, 'export-res-' + v]), opts.shortSide, v => { opts.shortSide = v; upd(); }),
+    select({ label: 'FPS', value: String(opts.fps), testid: 'export-fps', options: [['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
     slider({ label: 'Mbps', value: opts.mbps, min: 1, max: 40, step: 1, onInput: v => { opts.mbps = v; upd(); } }),
     toggle({ label: 'Video audio', value: opts.audio, onChange: v => (opts.audio = v) }),
     info, go, prog, result,
@@ -1346,7 +1462,8 @@ function buildChrome() {
   ic('#btnBack', 'back'); ic('#btnSettings', 'gear'); ic('#btnExport', 'share'); ic('#btnDup', 'dup'); ic('#btnDel', 'trash'); ic('#btnMore', 'more');
   ic('#btnKey', 'key'); ic('#btnPtAdd', 'pluscircle');
   ic('#btnUndo', 'undo'); ic('#btnRedo', 'redo'); ic('#btnStart', 'start'); ic('#btnEnd', 'end'); ic('#btnCopy', 'copy'); ic('#btnFit', 'fit');
-  ic('#fab', 'plus'); ic('#homeSettings', 'gear'); ic('#homeNew', 'plus');
+  ic('#fab', 'plus'); ic('#homeMenu', 'burger'); ic('#homeAvatar', 'user'); ic('#homeNew', 'plus'); ic('#homeBannerX', 'close');
+  document.querySelectorAll('#home [data-ic]').forEach(e => e.replaceWith(icon(e.dataset.ic)));
   $('#btnBack').onclick = goBack;
   $('#btnSettings').onclick = () => openSub('project');
   $('#btnExport').onclick = openExport;
@@ -1356,7 +1473,14 @@ function buildChrome() {
   $('#btnKey').onclick = toggleKeyAll;
   $('#btnPtAdd').onclick = placePoint;
   $('#fab').onclick = () => openSheet();
-  $('#homeNew').onclick = () => newProjectFlow(); $('#homeSettings').onclick = openHomeSettings;
+  $('#homeNew').onclick = () => openCreate(); $('#homeMenu').onclick = openHomeSettings;
+  $('#homeAvatar').onclick = soon('Account');
+  $('#homeImport').onclick = () => $('#fileJson').click();
+  $('#homeBannerX').onclick = () => { localStorage.setItem('kntc.bannerX', '1'); $('#homeBanner').hidden = true; };
+  document.querySelectorAll('#home [data-soon]').forEach(b => (b.onclick = soon(b.dataset.soon)));
+  document.querySelector('#home [data-nav=projects]').onclick = () => $('#homeScroll').scrollTo({ top: $('.h-head').offsetTop - 12, behavior: 'smooth' });
+  document.querySelector('#home [data-nav=home]').onclick = () => $('#homeScroll').scrollTo({ top: 0, behavior: 'smooth' });
+  $('#home').addEventListener('pointerdown', e => { if (homeMenu && !homeMenu.contains(e.target) && !e.target.closest('.pc-more')) closeHomeMenu(); });
   $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
   $('#btnPlay').onclick = () => togglePlay();
   $('#btnStart').onclick = () => seek(0);
@@ -1374,10 +1498,11 @@ function buildChrome() {
   new ResizeObserver(() => { layoutStage(); drawFrame(); }).observe($('#stageWrap'));
   window.addEventListener('keydown', e => {
     if (e.target.matches('input, textarea, select')) return;
+    if ((!$('#home').hidden || !$('#create').hidden) && e.key !== 'Escape') return; // editor shortcuts only in the editor
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
     else if (e.key === 'k') toggleKeyAll();
-    else if (e.key === 'Escape') goBack();
+    else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
@@ -1400,6 +1525,6 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect,
-    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer };
+    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store };
 }
 boot();

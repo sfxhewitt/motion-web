@@ -6,7 +6,7 @@ BASE = os.environ.get('BASE', 'http://localhost:8765/'); OUT = '/workspace/kntc-
 REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'reference')
 PAIRS = [('editor', '01-editor'), ('add-shape', '02-add-shape'), ('add-media', '03-add-media'), ('add-audio', '04-add-audio'),
          ('add-object', '05-add-object'), ('add-template', '06-add-template'), ('layer-selected', '07-layer-selected'),
-         ('edit-points', '08-edit-points'), ('drawing', '09-drawing')]
+         ('edit-points', '08-edit-points'), ('drawing', '09-drawing'), ('home', '10-home'), ('create', '11-create')]
 os.makedirs(OUT, exist_ok=True)
 with sync_playwright() as pw:
     b = pw.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader'])
@@ -20,7 +20,14 @@ with sync_playwright() as pw:
     P("document.documentElement.style.setProperty('--safe-t', '59px'); document.documentElement.style.setProperty('--safe-b', '34px')")
     P("(() => { const a = __app; a.project.name = 'Birthday intro'; a.commit(); a.showHome(); })()"); pg.wait_for_timeout(300)
     P("(() => { const a = __app; const p = a.demoProject('9:16'); p.name = 'Neon Demo'; a.setProject(p); a.showHome(); })()"); pg.wait_for_timeout(300)
+    # a few more projects like the reference list (different ratios / backgrounds)
+    P("""(() => { const a = __app; const st = a.store;
+      const mk = (name, bg, fill) => { const p = a.demoProject('9:16'); p.name = name; p.bg = bg; p.layers = p.layers.filter(l => l.type !== 'solid' && l.type !== 'adjust');
+        p.layers.forEach(l => { if (l.shape) l.shape.fill = fill; }); p.id = Math.random().toString(36).slice(2); st.saveProject(p); };
+      mk('Logo sting', '#cfeee0', '#5be8a0'); mk('Story opener', '#3a3b44', '#ff7a00'); st.saveProject(a.project); a.showHome(); })()"""); pg.wait_for_timeout(300)
     shot('home')
+    pg.click('[data-testid=home-new]'); shot('create', 500)
+    pg.click('[data-testid=create-close]'); pg.wait_for_timeout(300)
     pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(300)
     shot('editor')
     pg.click('[data-testid=tab-add]'); shot('add-shape')

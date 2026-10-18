@@ -16,6 +16,7 @@ export function saveProject(p) {
   } catch (e) { console.warn('save failed', e); return false; }
 }
 export function loadProject(id) { try { return JSON.parse(localStorage.getItem(PK(id))); } catch { return null; } }
+export function projectBytes(id) { return (localStorage.getItem(PK(id)) || '').length; }
 export function lastProjectId() { return localStorage.getItem('kntc.last'); }
 export function deleteProject(id) {
   localStorage.removeItem(PK(id));

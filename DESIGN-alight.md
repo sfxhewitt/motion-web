@@ -67,3 +67,27 @@ Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and 
 - Edit Points is simplified (straight segments, no bezier handles); no preview zoom (magnifier) button.
 - Selection overlay keeps a rotate handle + square scale handle (Alight shows only dots).
 - Keyframe easing editor (bezier) is KINETIC's own.
+
+## Home screen & Create sheet (v7, LIGHT theme — matched to `reference/10-home.jpg`, `11-create.jpg`)
+The editor stays dark; only the home screen, the Create sheet and dialogs opened from home are light.
+Font for these screens: **Space Grotesk** (SIL OFL, bundled subset `fonts/SpaceGrotesk.woff2`, licence `fonts/OFL.txt`).
+
+| Token | Value | Where |
+|---|---|---|
+| `--l-bg` | `#f5f5f5` | home background / top bar |
+| `--l-card` | `#ffffff` | banner, project cards, inactive pills, bottom tab bar, dropdowns |
+| `--l-navy` | `#202239` | active pill (Projects), active segment (Project) |
+| `--l-mint` | `#74fbaf` | + FAB (glow), active ratio chip, segment text; Create button `#75faa7` |
+| `--l-tag` | `#f8cd4d` | NEW tags (ink `#27221e`) |
+| `--l-btn` | `#d7dcfc` | banner button (ink `#20223b`) |
+| `--l-sheet` | `#ececee` | Create sheet; dim behind it = black @ 65% |
+| ink | `#202237`, meta `#b0b0b4`, inactive pills `#b4b4ba`, duration badge `#22223c` | |
+
+Layout (pt, 440 wide): top bar 58 (hamburger · centred KINETIC wordmark + own swoosh mark · 30pt avatar);
+banner 104 tall r13; pills 40 tall r10, gap 13; cards 110 tall r12, gap 15, 96pt thumbnail with duration badge,
+name 17/600, 2×2 meta grid (ratio · resolution / size · fps); bottom tab bar 79 + safe area with a 56pt FAB
+riding 11pt above it. Create sheet: r22 top corners, X + "Create" 27/600, segmented Project | Element (44),
+name field with clear button and underline, ratio chips 16:9 · 9:16 · 4:5 · 1:1 · 4:3 · custom (corner-bracket
+outlines), Resolution / Frame Rate / Background dropdowns (232×44, r12) and a 52pt "Create from scratch" button.
+The Create sheet really creates the project: resolution = short side (480–2160), fps and background colour
+are stored on the project; export defaults to the project's resolution and fps.

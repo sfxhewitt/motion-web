@@ -36,9 +36,69 @@ def run(pw, label, ctx_opts, mobile):
     # home screen (project list) shows first; open the demo project from it
     pg.wait_for_selector('[data-testid=home-open]')
     check(f'[{label}] home screen lists projects with + button', pg.locator('[data-testid=home]').is_visible() and pg.locator('[data-testid=home-new]').is_visible() and pg.locator('[data-testid=home-project]').count() >= 1)
-    pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
-    pg.wait_for_timeout(800)
     P = lambda js: pg.evaluate(js)
+    pg.on('dialog', lambda d: d.accept())  # confirm() for delete
+    # light home screen: top bar, banner, pill tabs, project cards with meta grid, bottom tab bar with the mint + FAB
+    hm = P("""(() => { const cs = s => getComputedStyle(document.querySelector(s)); const card = document.querySelector('[data-testid=home-project]');
+      return { bg: cs('#home').backgroundColor, card: getComputedStyle(card).backgroundColor, fab: cs('#homeNew').backgroundColor, pill: cs('.h-pills button.on').backgroundColor,
+        pills: [...document.querySelectorAll('.h-pills button')].map(b => b.firstChild.textContent), banner: !!document.querySelector('[data-testid=home-banner]').offsetParent,
+        nav: [...document.querySelectorAll('.h-nav button b')].map(b => b.textContent), meta: [...card.querySelectorAll('.pc-m')].map(e => e.textContent),
+        dur: card.querySelector('[data-testid=home-dur]').textContent, word: document.querySelector('.wordmark').textContent, font: cs('#home').fontFamily }; })()""")
+    check(f'[{label}] home: light theme, banner, pills, meta grid, bottom tab bar', hm['bg'] == 'rgb(245, 245, 245)' and hm['card'] == 'rgb(255, 255, 255)' and hm['fab'] == 'rgb(116, 251, 175)'
+          and hm['pill'] == 'rgb(32, 34, 57)' and hm['pills'] == ['Projects', 'Your Templates', 'Elements', 'Cloud'] and hm['banner'] and hm['nav'] == ['Home', 'Tutorials', 'Projects', 'Templates']
+          and hm['meta'] == ['9:16', '1080p', hm['meta'][2], '30fps'] and hm['meta'][2].endswith('kb') and hm['dur'] == '00:06:00' and hm['word'] == 'KINETIC', hm)
+    pg.click('.h-nav [data-nav=tutorials]'); pg.wait_for_timeout(100)
+    check(f'[{label}] home: non-functional tabs say coming soon', 'coming soon' in (P("[...document.querySelectorAll('.toast')].map(t => t.textContent).join('|')") or ''))
+    # banner Import opens the project-file picker; X dismisses (remembered)
+    with pg.expect_file_chooser() as fc: pg.click('[data-testid=home-import]')
+    check(f'[{label}] home: banner Import opens the project file picker', fc.value is not None)
+    pg.click('[data-testid=home-banner-close]'); pg.wait_for_timeout(50)
+    check(f'[{label}] home: banner dismissible', not pg.locator('[data-testid=home-banner]').is_visible() and P("localStorage.getItem('kntc.bannerX')") == '1')
+    P("localStorage.removeItem('kntc.bannerX'); document.querySelector('#homeBanner').hidden = false")
+    # + -> Create sheet
+    pg.click('[data-testid=home-new]'); pg.wait_for_timeout(350)
+    cr = P("""(() => { const q = s => document.querySelector(s); return { vis: !!q('#create .cr-sheet').offsetParent, name: q('[data-testid=create-name]').value,
+      on: q('.cr-ratio.on').dataset.a, ratios: [...document.querySelectorAll('.cr-ratio')].map(b => b.dataset.a), size: q('[data-testid=create-size]').textContent,
+      res: q('[data-testid=create-res]').value, fps: q('[data-testid=create-fps]').value, bg: q('[data-testid=create-bg]').value,
+      sheet: getComputedStyle(q('.cr-sheet')).backgroundColor, seg: getComputedStyle(q('.cr-seg .on')).color, go: q('[data-testid=create-go]').textContent }; })()""")
+    check(f'[{label}] create sheet: auto-numbered name, 9:16 active, 1080p / 30 fps / Light Grey', cr['vis'] and cr['name'] == 'Project Name 2' and cr['on'] == '9:16'
+          and cr['ratios'] == ['16:9', '9:16', '4:5', '1:1', '4:3', 'custom'] and cr['size'] == 'Composition Size1080 × 1920' and cr['res'] == '1080' and cr['fps'] == '30'
+          and cr['bg'] == '#d9d9d9' and cr['sheet'] == 'rgb(236, 236, 238)' and cr['seg'] == 'rgb(116, 251, 175)' and cr['go'] == 'Create from scratch', cr)
+    if mobile: pg.screenshot(path=f'{SHOTS}/{label}-02-create-sheet.png')
+    pg.click('[data-testid=create-name-clear]'); check(f'[{label}] create: clear name button', P("document.querySelector('[data-testid=create-name]').value") == '')
+    pg.fill('[data-testid=create-name]', 'My Reel')
+    pg.click('[data-testid="create-ratio-16:9"]'); pg.select_option('[data-testid=create-res]', '720'); pg.select_option('[data-testid=create-fps]', '60'); pg.select_option('[data-testid=create-bg]', '#000000')
+    check(f'[{label}] create: composition size follows ratio + resolution', P("document.querySelector('[data-testid=create-size]').textContent") == 'Composition Size1280 × 720')
+    pg.click('[data-testid=create-go]'); pg.wait_for_timeout(400)
+    np_ = P("(() => { const p = __app.project; return [p.name, p.w, p.h, p.fps, p.bg, p.aspect, p.layers.length, document.getElementById('home').hidden, document.getElementById('create').hidden]; })()")
+    corner = pg.evaluate(PIX, [0.02, 0.02])
+    check(f'[{label}] create from scratch makes the project (16:9 720p 60fps, black bg on the canvas)', np_ == ['My Reel', 1280, 720, 60, '#000000', '16:9', 0, True, True] and corner[:3] == [0, 0, 0], (np_, corner))
+    pg.click('[data-testid=btn-export]'); pg.wait_for_timeout(200)
+    ex = P("({ res: document.querySelector('[data-testid=export-res-720]').classList.contains('on'), fps: document.querySelector('[data-testid=export-fps]').value, info: document.querySelector('dialog .hint').textContent })")
+    check(f'[{label}] export defaults to the project resolution and fps', ex['res'] and ex['fps'] == '60' and ex['info'].startswith('1280×720 · 60fps'), ex)
+    pg.click('[data-testid=dlg-close]')
+    # custom ratio via the pencil
+    pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(200); pg.click('[data-testid=home-new]'); pg.wait_for_timeout(300)
+    check(f'[{label}] create: next auto-number', P("document.querySelector('[data-testid=create-name]').value") == 'Project Name 3')
+    pg.click('[data-testid=create-ratio-custom]'); pg.fill('[data-testid=create-custom-w]', '2'); pg.fill('[data-testid=create-custom-h]', '1'); pg.select_option('[data-testid=create-bg]', '#ffffff')
+    pg.click('[data-testid=create-go]'); pg.wait_for_timeout(300)
+    check(f'[{label}] create: custom ratio 2:1 @1080p', P("[__app.project.w, __app.project.h, __app.project.aspect, __app.project.bg]") == [2160, 1080, '2:1', '#ffffff'])
+    # close via X keeps the home screen; card ... menu: rename / duplicate / delete
+    pg.click('[data-testid=btn-back]'); pg.wait_for_timeout(200)
+    pg.click('[data-testid=home-new]'); pg.wait_for_timeout(300); pg.click('[data-testid=create-close]'); pg.wait_for_timeout(300)
+    check(f'[{label}] create sheet closes with X', P("document.getElementById('create').hidden") and pg.locator('[data-testid=home]').is_visible())
+    n0 = pg.locator('[data-testid=home-project]').count()
+    pg.locator('[data-testid=home-project]', has_text='My Reel').locator('[data-testid=home-more]').click(); pg.wait_for_timeout(80)
+    pg.click('[data-testid=home-rename]'); pg.fill('[data-testid=rename-input]', 'Reel v2'); pg.click('[data-testid=rename-save]'); pg.wait_for_timeout(150)
+    names = P("[...document.querySelectorAll('[data-testid=home-name]')].map(b => b.textContent)")
+    check(f'[{label}] home menu: rename', 'Reel v2' in names and 'My Reel' not in names, names)
+    pg.locator('[data-testid=home-project]', has_text='Reel v2').locator('[data-testid=home-more]').click(); pg.click('[data-testid=home-duplicate]'); pg.wait_for_timeout(150)
+    check(f'[{label}] home menu: duplicate', pg.locator('[data-testid=home-project]').count() == n0 + 1 and pg.locator('[data-testid=home-name]', has_text='Reel v2 copy').count() == 1)
+    pg.locator('[data-testid=home-project]', has_text='Reel v2 copy').locator('[data-testid=home-more]').click(); pg.click('[data-testid=home-delete]'); pg.wait_for_timeout(150)
+    check(f'[{label}] home menu: delete', pg.locator('[data-testid=home-project]').count() == n0 and pg.locator('[data-testid=home-name]', has_text='Reel v2 copy').count() == 0)
+    if mobile: pg.screenshot(path=f'{SHOTS}/{label}-02-home.png')
+    # open the demo project again
+    pg.locator('[data-testid=home-project]', has_text='Neon Demo').locator('[data-testid=home-open]').click(); pg.wait_for_timeout(1000)
     def to_none():  # back out of sheet / sub panel / selection to the plain editor
         for _ in range(5):
             if P("__app.S.tab") == 'add': pg.click('[data-testid=sheet-close]')
@@ -79,8 +139,8 @@ def run(pw, label, ctx_opts, mobile):
     check(f'[{label}] playback advances playhead', abs(t_play - 1.6) > 0.1, round(t_play, 2))
 
     # 2. new 1:1 project
-    tab('project'); pg.click('[data-testid=new-project]'); pg.click('[data-testid="new-1:1"]'); pg.wait_for_timeout(300)
-    check(f'[{label}] new project 1:1', P('[__app.project.w, __app.project.h, __app.project.layers.length]') == [1080, 1080, 0])
+    tab('project'); pg.click('[data-testid=new-project]'); pg.wait_for_timeout(300); pg.click('[data-testid="create-ratio-1:1"]'); pg.click('[data-testid=create-go]'); pg.wait_for_timeout(300)
+    check(f'[{label}] new project 1:1 (editor New -> Create sheet)', P('[__app.project.w, __app.project.h, __app.project.layers.length]') == [1080, 1080, 0])
     # aspect switch
     tab('project'); pg.click('[data-testid="aspect-16:9"]'); pg.wait_for_timeout(150)
     check(f'[{label}] aspect preset 16:9', P('[__app.project.w, __app.project.h]') == [1920, 1080])

@@ -3,6 +3,8 @@
 A mobile-first, browser-only motion-graphics editor — layers, keyframes, easing curves, WebGL effects, blend modes and video export.
 Built as a personal tool for iPhone Safari (add it to your Home Screen) that works just as well on desktop.
 
+The light home screen lists your projects (⋯ menu: rename / duplicate / delete); the mint **+** opens the Create sheet (name, ratio incl. custom, resolution, frame rate, background).
+
 **Live:** https://sfxhewitt.github.io/motion-web/
 
 > Personal, non-commercial project inspired by the *workflow* of mobile motion editors (such as Alight Motion).

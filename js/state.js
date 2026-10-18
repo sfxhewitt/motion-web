@@ -17,10 +17,20 @@ export const ASPECTS = {
 export const uid = () => Math.random().toString(36).slice(2, 10);
 export const clone = o => JSON.parse(JSON.stringify(o));
 
-export function newProject(aspect = '9:16', name = 'Untitled') {
-  const [w, h] = ASPECTS[aspect];
+// Resolution presets (short side of the composition, as in Alight's Create sheet)
+export const RESOLUTIONS = [[480, '480p (SD)'], [720, '720p (HD)'], [1080, '1080p (FHD)'], [1440, '1440p (QHD)'], [2160, '2160p (4K UHD)']];
+// aspect '16:9' / custom 'a:b' + short side -> even composition size
+export function sizeFor(aspect, short = 1080) {
+  const [a, b] = String(aspect).split(':').map(Number);
+  if (!(a > 0 && b > 0)) return [short, short];
+  const even = v => Math.max(2, Math.round(v / 2) * 2);
+  return a >= b ? [even(short * a / b), short] : [short, even(short * b / a)];
+}
+
+export function newProject(aspect = '9:16', name = 'Untitled', { res, fps = 30, bg = '#05060a' } = {}) {
+  const [w, h] = res ? sizeFor(aspect, res) : (ASPECTS[aspect] || sizeFor(aspect, 1080));
   return {
-    id: uid(), name, aspect, w, h, fps: 30, duration: 6, bg: '#05060a',
+    id: uid(), name, aspect, w, h, fps, duration: 6, bg,
     created: Date.now(), modified: Date.now(), layers: [], version: 1,
   };
 }

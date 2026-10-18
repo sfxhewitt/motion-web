@@ -15,6 +15,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preload" href="fonts/SpaceGrotesk.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body data-mode="none">
@@ -52,11 +53,31 @@
   </section>
 </div>
 <section id="home" data-testid="home" hidden>
-  <header class="h-top"><b class="wordmark">KINETIC</b><div class="sp"></div><button id="homeSettings" class="ib" title="Settings" data-testid="home-settings"></button></header>
-  <div class="h-seg"><button class="on">Projects</button><button disabled title="Coming later">Elements</button></div>
-  <div id="homeList" class="h-list"></div>
-  <button id="homeNew" class="fab" title="New project" aria-label="New project" data-testid="home-new"></button>
+  <header class="h-top">
+    <button id="homeMenu" class="h-ib" title="Menu" aria-label="Menu" data-testid="home-settings"></button>
+    <div class="wordmark" aria-label="KINETIC"><svg class="wm-mark" viewBox="0 0 28 22" aria-hidden="true"><path d="M2 17.5C8 18.5 15.5 15 20 7.5" fill="none" stroke="#1e2135" stroke-width="2.6" stroke-linecap="round"/><path d="M8.5 20.5c5.6-.4 11-3.6 14.2-9" fill="none" stroke="#1e2135" stroke-width="1.6" stroke-linecap="round" opacity=".55"/><circle cx="23.2" cy="4.2" r="2.6" fill="#2ee39a"/></svg><span>KINETIC</span></div>
+    <button id="homeAvatar" class="h-avatar" title="Account" aria-label="Account" data-testid="home-account"></button>
+  </header>
+  <div class="h-scroll" id="homeScroll">
+    <div id="homeBanner" class="h-banner" data-testid="home-banner">
+      <div class="hb-tx"><span class="tag">NEW</span><p>Import a project file from your device</p></div>
+      <button id="homeImport" class="hb-btn" data-testid="home-import">Import</button>
+      <button id="homeBannerX" class="hb-x" title="Dismiss" aria-label="Dismiss" data-testid="home-banner-close"></button>
+    </div>
+    <div class="h-pills" data-testid="home-pills"><button class="on" data-testid="pill-projects">Projects</button><button data-soon="Your Templates">Your Templates</button><button data-soon="Elements">Elements</button><button data-soon="Cloud">Cloud<i class="tag">NEW</i></button></div>
+    <h2 class="h-head">Your projects</h2>
+    <div id="homeList" class="h-list"></div>
+  </div>
+  <nav class="h-nav" data-testid="home-nav">
+    <button class="on" data-nav="home"><span data-ic="home"></span><b>Home</b></button>
+    <button data-nav="tutorials" data-soon="Tutorials"><span data-ic="tutorials"></span><b>Tutorials</b></button>
+    <span class="h-navgap"></span>
+    <button data-nav="projects"><span data-ic="projects"></span><b>Projects</b></button>
+    <button data-nav="templates" data-soon="Templates"><span data-ic="templates"></span><b>Templates</b><i class="tag">NEW</i></button>
+    <button id="homeNew" class="h-fab" title="Create" aria-label="Create" data-testid="home-new"></button>
+  </nav>
 </section>
+<section id="create" data-testid="create-sheet" hidden></section>
 <dialog id="dlg"></dialog>
 <input type="file" id="fileMedia" accept="image/*,video/*" hidden data-testid="file-media">
 <input type="file" id="fileAudio" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg" hidden data-testid="file-audio">
