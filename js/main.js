@@ -335,26 +335,177 @@ function renderTimeline() {
   inner.append(h('div', { id: 'playhead' }, h('span')));
   const sl = tl.scrollLeft, st = tl.scrollTop;
   tl.replaceChildren(inner); tl.scrollLeft = sl; tl.scrollTop = st;
-  movePlayhead();
+  movePlayhead(); G.updBars?.();
 }
+const scrubAt = (el, clientX) => seek((clientX - el.getBoundingClientRect().left) / S.pps);
 function bindScrub(el) {
   el.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse') return; // touch/pen: handled by the timeline gesture controller below
     el.setPointerCapture(e.pointerId); if (S.playing) togglePlay(false);
-    const r = el.getBoundingClientRect();
-    const mv = ev => seek((ev.clientX - r.left) / S.pps);
+    const mv = ev => scrubAt(el, ev.clientX);
     mv(e);
     const up = () => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
     el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
   });
 }
-function bindDrag(el, { onStart, onMove, onEnd }) {
+// Mouse: drag immediately (desktop). Touch/pen: the spec is stored on the element and driven by the gesture controller,
+// which only starts a drag after a long press or when the item is already selected.
+function bindDrag(el, spec) {
+  const { onStart, onMove, onEnd } = spec;
+  el._drag = spec;
   el.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse') return;
     e.stopPropagation(); el.setPointerCapture(e.pointerId);
     const x0 = e.clientX; let moved = false; const ctx = onStart?.(e) || {};
     const mv = ev => { const dx = ev.clientX - x0; if (Math.abs(dx) > 3) moved = true; if (moved) onMove(dx / S.pps, ctx, ev); };
     const up = ev => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); onEnd?.(moved, ctx, ev); };
     el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
   });
+}
+
+// ---------------- timeline touch gestures ----------------
+// One controller for every touch/pen pointer on the timeline (touch-action: none, so the browser never scrolls it):
+//  * swipe anywhere (track, labels, clips, keyframes) -> pan x/y with axis lock + momentum
+//  * long press (300ms, <8px) on a clip / trim handle / keyframe -> grab it (visual pop + vibrate), then drag
+//  * touch on an already-selected clip / trim / keyframe -> drag right away (vertical swipe on a selected clip still pans)
+//  * tap -> select (clips/keys) or the normal click (labels, empty track = seek)
+//  * ruler -> scrub; two fingers anywhere -> pinch-zoom time around the fingers
+const SLOP = 8, HOLD_MS = 300, ZMIN = 12, ZMAX = 800;
+const G = { ptrs: new Map(), g: null, pinch: null, mom: 0, raf: 0, noClick: false };
+const tlOriginX = () => LABEL_W() + 12; // content x of t=0
+function zoomTo(pps, clientX, anchorT) {
+  pps = Math.max(ZMIN, Math.min(ZMAX, pps));
+  const r = tl.getBoundingClientRect(), vx = clientX - r.left;
+  const t = anchorT ?? (vx + tl.scrollLeft - tlOriginX()) / S.pps;
+  S.autoFit = false; S.pps = pps; renderTimeline();
+  tl.scrollLeft = tlOriginX() + t * pps - vx;
+}
+function stopMomentum() { cancelAnimationFrame(G.mom); G.mom = 0; }
+function startMomentum(g) {
+  const s = g.samples, b = s[s.length - 1], now = performance.now();
+  const a = s.find(q => b.t - q.t <= 100) || s[0], dt = b.t - a.t;
+  if (s.length < 2 || dt < 8 || now - b.t > 80) return;
+  let vx = g.axis === 'y' ? 0 : -(b.x - a.x) / dt * 16.67, vy = g.axis === 'x' ? 0 : -(b.y - a.y) / dt * 16.67; // px per frame
+  let px = tl.scrollLeft, py = tl.scrollTop, last = now;
+  const step = t => {
+    const f = Math.min(4, (t - last) / 16.67); last = t;
+    const mx = tl.scrollWidth - tl.clientWidth, my = tl.scrollHeight - tl.clientHeight;
+    px = Math.max(0, Math.min(mx, px + vx * f)); py = Math.max(0, Math.min(my, py + vy * f));
+    tl.scrollLeft = px; tl.scrollTop = py;
+    if (px <= 0 || px >= mx) vx = 0; if (py <= 0 || py >= my) vy = 0;
+    const k = Math.pow(0.95, f); vx *= k; vy *= k;
+    G.mom = Math.hypot(vx, vy) > 0.25 ? requestAnimationFrame(step) : 0;
+  };
+  G.mom = requestAnimationFrame(step);
+}
+function grab(g, x) {
+  g.mode = 'drag'; g.gx = x; g.ctx = g.spec.onStart?.({ target: g.target, clientX: x }) || {};
+  g.item.classList.add('grabbed'); tl.classList.add('grabbing');
+  try { navigator.vibrate?.(12); } catch {}
+}
+function endDrag(g, ev) {
+  g.item.classList.remove('grabbed'); tl.classList.remove('grabbing');
+  g.spec.onEnd?.(g.moved, g.ctx, ev);
+}
+function pinchState() {
+  const [a, b] = [...G.ptrs.values()];
+  return { d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+}
+function bindTimelineGestures() {
+  tl.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    e.preventDefault(); stopMomentum(); G.noClick = false;
+    try { tl.setPointerCapture(e.pointerId); } catch {}
+    G.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (G.ptrs.size === 2) { // second finger -> pinch; abandon whatever the first finger was doing
+      const g = G.g; G.g = null;
+      if (g) { clearTimeout(g.hold); if (g.mode === 'drag') endDrag(g, e); }
+      const ps = pinchState(), r = tl.getBoundingClientRect();
+      G.pinch = { ...ps, pps0: S.pps, t: (ps.mx - r.left + tl.scrollLeft - tlOriginX()) / S.pps, st0: tl.scrollTop };
+      G.noClick = true; return;
+    }
+    if (G.ptrs.size > 2 || G.pinch) return;
+    const hit = e.target.closest('.kf, .clip, .tl-ruler');
+    const g = G.g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, sl: tl.scrollLeft, st: tl.scrollTop, mode: 'pending', target: e.target,
+      samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }], moved: false };
+    if (hit?.classList.contains('tl-ruler')) { g.mode = 'scrub'; g.ruler = hit; if (S.playing) togglePlay(false); scrubAt(hit, e.clientX); return; }
+    if (hit?._drag) {
+      g.item = hit; g.spec = hit._drag; g.isKey = hit.classList.contains('kf'); g.isTrim = e.target.classList.contains('trim');
+      g.armed = hit.classList.contains(g.isKey ? 'on' : 'sel');
+      g.hold = setTimeout(() => { if (G.g === g && g.mode === 'pending') { if (S.playing) togglePlay(false); grab(g, g.lx ?? g.x0); } }, HOLD_MS);
+    }
+  });
+  tl.addEventListener('pointermove', e => {
+    const p = G.ptrs.get(e.pointerId); if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    if (G.pinch) {
+      if (G.ptrs.size < 2 || G.raf) return;
+      G.raf = requestAnimationFrame(() => {
+        G.raf = 0; if (!G.pinch || G.ptrs.size < 2) return;
+        const ps = pinchState(), pz = G.pinch;
+        const pps = Math.max(ZMIN, Math.min(ZMAX, pz.pps0 * ps.d / pz.d));
+        if (Math.abs(pps - S.pps) > 0.01) zoomTo(pps, ps.mx, pz.t);
+        else tl.scrollLeft = tlOriginX() + pz.t * S.pps - (ps.mx - tl.getBoundingClientRect().left);
+        tl.scrollTop = pz.st0 - (ps.my - pz.my);
+      });
+      return;
+    }
+    const g = G.g; if (!g || g.id !== e.pointerId) return;
+    const dx = e.clientX - g.x0, dy = e.clientY - g.y0, now = performance.now();
+    g.lx = e.clientX; g.samples.push({ x: e.clientX, y: e.clientY, t: now });
+    while (g.samples.length > 2 && now - g.samples[0].t > 150) g.samples.shift();
+    if (g.mode === 'scrub') return scrubAt(g.ruler, e.clientX);
+    if (g.mode === 'pending') {
+      if (Math.hypot(dx, dy) < SLOP) return;
+      clearTimeout(g.hold);
+      if (g.item && g.armed && (g.isKey || g.isTrim || Math.abs(dx) >= Math.abs(dy))) { grab(g, g.x0); }
+      else { g.mode = 'pan'; G.noClick = true; const ax = Math.abs(dx), ay = Math.abs(dy); g.axis = ax > 2 * ay ? 'x' : ay > 2 * ax ? 'y' : 'xy'; }
+    }
+    if (g.mode === 'pan') {
+      if (g.axis !== 'y') tl.scrollLeft = g.sl - dx;
+      if (g.axis !== 'x') tl.scrollTop = g.st - dy;
+    } else if (g.mode === 'drag') {
+      const ddx = e.clientX - g.gx; if (Math.abs(ddx) > 2) g.moved = true;
+      if (g.moved) g.spec.onMove(ddx / S.pps, g.ctx, e);
+    }
+  });
+  const up = e => {
+    if (!G.ptrs.has(e.pointerId)) return;
+    G.ptrs.delete(e.pointerId);
+    if (G.pinch) { if (G.ptrs.size < 2) { G.pinch = null; renderTimeline(); } return; }
+    const g = G.g; if (!g || g.id !== e.pointerId) return;
+    G.g = null; clearTimeout(g.hold);
+    if (g.mode === 'drag') { G.noClick = true; endDrag(g, e); }
+    else if (g.mode === 'pan') startMomentum(g);
+    else if (g.mode === 'pending' && g.item && e.type === 'pointerup') { G.noClick = true; g.spec.onEnd?.(false, g.spec.onStart?.({ target: g.target, clientX: e.clientX }) || {}, e); }
+  };
+  tl.addEventListener('pointerup', up); tl.addEventListener('pointercancel', up);
+  tl.addEventListener('lostpointercapture', up);
+  // a pan / drag / pinch must not end in a click (seek on empty track, select on label)
+  tl.addEventListener('click', e => { if (G.noClick) { G.noClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+  tl.addEventListener('contextmenu', e => e.preventDefault());
+  // desktop: ctrl/trackpad-pinch wheel zooms time around the cursor
+  tl.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoomTo(S.pps * Math.exp(-e.deltaY * 0.01), e.clientX); }, { passive: false });
+  // scroll indicators (iOS hides native ones on a JS-panned box)
+  const bx = h('div', { class: 'tl-sb x' }, h('i')), by = h('div', { class: 'tl-sb y' }, h('i'));
+  $('#timeline').append(bx, by);
+  let hideT;
+  const upd = () => {
+    const W = tl.scrollWidth, cw = tl.clientWidth, H = tl.scrollHeight, ch = tl.clientHeight;
+    bx.hidden = W <= cw + 1; by.hidden = H <= ch + 1;
+    if (!bx.hidden) { const w = Math.max(24, cw * cw / W); bx.firstChild.style.cssText = `width:${w}px;transform:translateX(${(cw - w) * tl.scrollLeft / (W - cw)}px)`; }
+    if (!by.hidden) { const hh = Math.max(16, ch * ch / H); by.firstChild.style.cssText = `height:${hh}px;transform:translateY(${(ch - hh) * tl.scrollTop / (H - ch)}px)`; }
+  };
+  tl.addEventListener('scroll', () => { upd(); $('#timeline').classList.add('scrolling'); clearTimeout(hideT); hideT = setTimeout(() => $('#timeline').classList.remove('scrolling'), 700); }, { passive: true });
+  new ResizeObserver(upd).observe(tl);
+  G.updBars = upd;
+}
+// Lock the app shell: nothing outside real scroll areas may scroll, rubber-band or page-zoom.
+function lockPage() {
+  const scrollable = t => t.closest?.('#panelBody, dialog, textarea, select, input');
+  document.addEventListener('touchmove', e => { if (e.touches.length > 1 || !scrollable(e.target)) e.preventDefault(); }, { passive: false });
+  for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+  window.addEventListener('scroll', () => { if (window.scrollX || window.scrollY) window.scrollTo(0, 0); });
 }
 const snapT = t => { const f = P().fps; return Math.round(t * f) / f; };
 function bindClip(clip, L) {
@@ -727,7 +878,7 @@ function buildChrome() {
   $('#btnStart').onclick = () => seek(0);
   $('#btnLoop').onclick = () => { S.loop = !S.loop; updateTransport(); };
   $('#btnKey').onclick = toggleKeyAll;
-  $('#zoomIn').onclick = () => { S.autoFit = false; S.pps = Math.min(400, S.pps * 1.4); renderTimeline(); };
+  $('#zoomIn').onclick = () => { S.autoFit = false; S.pps = Math.min(ZMAX, S.pps * 1.4); renderTimeline(); };
   $('#zoomOut').onclick = () => { S.autoFit = false; S.pps = Math.max(12, S.pps / 1.4); renderTimeline(); };
   $('#projName').onchange = e => { P().name = e.target.value || 'Untitled'; commit(); };
   $('#fileMedia').onchange = e => { const f = e.target.files[0]; if (f) importMediaFile(f); e.target.value = ''; };
@@ -751,7 +902,7 @@ function undo() { const s = history.undo(); if (s) { S.project = s; hydrateMedia
 function redo() { const s = history.redo(); if (s) { S.project = s; hydrateMedia(s); scheduleSave(); refreshAll(); } }
 
 function boot() {
-  buildChrome();
+  buildChrome(); lockPage(); bindTimelineGestures();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
   if (!p) p = demoProject('9:16');

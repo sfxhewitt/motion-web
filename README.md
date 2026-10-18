@@ -14,6 +14,7 @@ Built as a personal tool for iPhone Safari (add it to your Home Screen) that wor
 - **Keyframes:** position X/Y, scale, rotation and opacity. Use ◆ per property, or KEY to keyframe them all at the playhead. Once a property is animated, any edit you make creates a keyframe. A motion path is drawn on the canvas.
 - **Easing:** Linear, Ease In/Out, In&Out, Expo, Back, Snap, Bounce, Elastic, Steps and Hold, plus a draggable cubic-bezier editor that allows overshoot.
 - **Timeline:** scrub the ruler, drag clips to move them (keys move too), trim clip ends, drag diamonds to retime keys, zoom, and per-property key rows.
+- **Timeline touch gestures (Alight-Motion style):** swipe anywhere, clips and keyframes included, to pan in x/y with momentum. Tap selects. Long-press (~0.3 s) a clip, trim handle or keyframe to grab it (it pops and glows), then drag. Something already selected drags straight away. Pinch with two fingers to zoom time (ctrl/trackpad-pinch on desktop). The page shell is locked, so it never scrolls or rubber-bands.
 - **Canvas gestures:** drag to move, use the corner handle to scale and the knob to rotate, pinch with two fingers to scale and rotate, with snapping to centre.
 - **21 effects** (WebGL, original shaders): Gaussian/Motion/Zoom Blur, Neon Glow, Color Adjust (with hue cycling), Duotone, Invert, Posterize, Chromatic Split (pulsing), Glitch, Pixelate, CRT Scanlines, Grain, Vignette, Wave Warp, Swirl, Kaleidoscope, Mirror, and the motion effects Shake, Pulse Scale and Auto Spin. Effects stack, and you can toggle and reorder them.
 - **20 blend modes:** normal, add, screen, lighten, dodge, multiply, darken, burn, overlay, soft/hard light, difference, exclusion, hue, saturation, color, luminosity, clip-to-below, alpha mask and cut-out.
@@ -30,7 +31,8 @@ python3 -m http.server 8765   # then open http://localhost:8765
 ## Tests
 Playwright (Chromium) runs in two modes: desktop at 1440×900, and iPhone emulation at 440×956 with touch and DPR 3.
 ```
-python3 tests/e2e.py
+python3 tests/e2e.py        # full feature suite, desktop + iPhone
+python3 tests/gestures.py   # timeline touch gestures with real touch input (440×956)
 ```
 The suite covers layer creation, keyframes and interpolation, easing, every effect, blend modes, undo/redo, persistence, JSON round-trip, media import, WebM and MP4 export (checking the output decodes), canvas dragging and the PWA manifest.
 
