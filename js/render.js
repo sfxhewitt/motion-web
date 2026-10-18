@@ -147,9 +147,10 @@ export class Renderer {
         const drawTo = (c) => {
           c.setTransform(s, 0, 0, s, 0, 0);
           c.translate(tr.x, tr.y); c.rotate(tr.rotation * Math.PI / 180); c.scale(tr.scale, tr.scale);
+          if (L.shadow?.on && L.type !== 'adjust') { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
           drawContent(c, L, project);
         };
-        if (!shaderFx && op === 'source-over' && L.type !== 'text' && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
+        if (!shaderFx && op === 'source-over' && L.type !== 'text' && !L.shadow?.on && !(L.type === 'shape' && L.shape.strokeW > 0 && tr.opacity < 1)) {
           ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore();
         } else {
           lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, W, H);

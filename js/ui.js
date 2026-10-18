@@ -65,6 +65,19 @@ export function toast(msg, ms = 1800) {
 }
 
 export const ICONS = {
+  back: '<path d="M15 5 8 12l7 7"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/><circle cx="12" cy="12" r="6.5"/>',
+  share: '<path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5v9h14v-9h-1"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
+  fill: '<path d="M5 13 12 6l6 6-7 7Z"/><path d="M8 3l4 3M19 15s-2 2.4-2 3.6a2 2 0 0 0 4 0c0-1.2-2-3.6-2-3.6Z"/>',
+  border: '<rect x="4" y="4" width="13" height="13" rx="2.5"/><path d="M20 8v10a2 2 0 0 1-2 2H8"/>',
+  kfs: '<path d="M7 8 10 12 7 16 4 12Z"/><path d="M17 8l3 4-3 4-3-4Z"/><path d="M10 12h4"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  audio: '<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="16" r="2.2"/>',
+  element: '<path d="M12 3l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 15.4 7.2 17.9l.9-5.4-3.9-3.8 5.4-.8Z"/>',
+  image: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/>',
+
   rect: '<rect x="4" y="6" width="16" height="12" rx="1.5"/>',
   ellipse: '<ellipse cx="12" cy="12" rx="8" ry="7"/>',
   triangle: '<path d="M12 4 21 19H3Z"/>',
@@ -103,4 +116,4 @@ export const ICONS = {
   export: '<path d="M12 15V3M7 8l5-5 5 5M4 14v6h16v-6"/>',
   center: '<circle cx="12" cy="12" r="2"/><path d="M12 3v5M12 16v5M3 12h5M16 12h5"/>',
 };
-export const icon = (n, cls = '') => h('span', { class: 'ico ' + cls, html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ''}</svg>` });
+export const icon = (n, cls = '') => h('span', { class: 'ico ' + cls, html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ''}</svg>` });

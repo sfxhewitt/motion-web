@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#05060a">
+<meta name="theme-color" content="#121212">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <!-- "default" (not black-translucent): on iOS 26 standalone, black-translucent sizes the layout viewport as screen minus
@@ -11,7 +11,7 @@
      web view starts below the status bar (painted with theme-color) and ends exactly at the bottom edge. -->
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Kinetic">
-<title>KINETIC // motion</title>
+<title>KINETIC</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -21,12 +21,12 @@
 <div id="app">
   <header id="top">
     <button id="btnProjects" class="ib" title="Projects" data-testid="btn-projects"></button>
-    <div class="brand"><b>KNTC</b><span>//motion</span></div>
     <input id="projName" class="pname" aria-label="Project name" spellcheck="false">
     <div class="sp"></div>
     <button id="btnUndo" class="ib" title="Undo" data-testid="undo"></button>
     <button id="btnRedo" class="ib" title="Redo" data-testid="redo"></button>
-    <button id="btnExport" class="primary" data-testid="btn-export">Export</button>
+    <button id="btnSettings" class="ib" title="Project settings" data-testid="tab-project" data-tab="project"></button>
+    <button id="btnExport" class="ib exp" title="Export" aria-label="Export" data-testid="btn-export"></button>
   </header>
   <main id="stageWrap">
     <div id="stage"><canvas id="view" data-testid="view"></canvas><canvas id="overlay"></canvas></div>
@@ -43,9 +43,15 @@
     <button id="zoomIn" class="ib" title="Zoom timeline in"></button>
   </section>
   <section id="timeline"><div id="tlScroll" data-testid="timeline"></div></section>
-  <aside id="panel"><div id="panelBody" data-testid="panel"></div></aside>
+  <aside id="panel"><div id="panelHead"><b id="panelTitle"></b><button id="panelClose" class="ib" title="Done" data-testid="panel-close"></button></div><div id="panelBody" data-testid="panel"></div></aside>
   <nav id="tabs"></nav>
 </div>
+<section id="home" data-testid="home" hidden>
+  <header class="h-top"><b class="wordmark">KINETIC</b><div class="sp"></div><button id="homeSettings" class="ib" title="Settings" data-testid="home-settings"></button></header>
+  <div class="h-seg"><button class="on">Projects</button><button disabled title="Coming later">Elements</button></div>
+  <div id="homeList" class="h-list"></div>
+  <button id="homeNew" class="fab" title="New project" aria-label="New project" data-testid="home-new"></button>
+</section>
 <dialog id="dlg"></dialog>
 <input type="file" id="fileMedia" accept="image/*,video/*" hidden data-testid="file-media">
 <input type="file" id="fileJson" accept=".json,application/json" hidden data-testid="file-json">

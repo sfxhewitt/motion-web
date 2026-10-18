@@ -28,6 +28,10 @@ def run(pw, label, ctx_opts, mobile):
     pg.on('console', lambda m: errs.append(m.text) if m.type == 'error' else None)
     pg.goto(BASE); pg.wait_for_function('window.__app && __app.project')
     pg.evaluate('localStorage.clear()'); pg.reload(); pg.wait_for_function('window.__app && __app.project')
+    # home screen (project list) shows first; open the demo project from it
+    pg.wait_for_selector('[data-testid=home-open]')
+    check(f'[{label}] home screen lists projects with + button', pg.locator('[data-testid=home]').is_visible() and pg.locator('[data-testid=home-new]').is_visible() and pg.locator('[data-testid=home-project]').count() >= 1)
+    pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
     pg.wait_for_timeout(800)
     P = lambda js: pg.evaluate(js)
     tab = lambda t: pg.click(f'[data-testid=tab-{t}]') if P(f"__app.S.tab") != t else None
@@ -156,6 +160,7 @@ def run(pw, label, ctx_opts, mobile):
     P("__app.project.layers.forEach(l => l.visible = true); __app.commit()")
     pg.wait_for_timeout(600); pid = P('__app.project.id'); nl = P('__app.project.layers.length')
     pg.reload(); pg.wait_for_function('window.__app && __app.project'); pg.wait_for_timeout(500)
+    pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
     check(f'[{label}] localStorage persistence across reload', P('__app.project.id') == pid and P('__app.project.layers.length') == nl)
     pg.wait_for_function("(() => { const L = __app.project.layers.find(l => l.type==='image'); return !L || document.querySelector('#view') })()")
 

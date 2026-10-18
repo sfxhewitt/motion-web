@@ -135,22 +135,22 @@ function drawOverlay() {
   ctx.setTransform(k, 0, 0, k, 0, 0);
   // motion path
   if (hasKeys(L, 'x') || hasKeys(L, 'y')) {
-    ctx.beginPath(); ctx.lineWidth = 1.2 / k; ctx.strokeStyle = 'rgba(198,255,0,.55)'; ctx.setLineDash([4 / k, 4 / k]);
+    ctx.beginPath(); ctx.lineWidth = 1.2 / k; ctx.strokeStyle = 'rgba(255,204,51,.6)'; ctx.setLineDash([4 / k, 4 / k]);
     for (let i = 0; i <= 60; i++) { const t = L.start + (L.end - L.start) * i / 60; const x = valueAt(L, 'x', t), y = valueAt(L, 'y', t); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
     ctx.stroke(); ctx.setLineDash([]);
   }
   if (S.t < L.start || S.t >= L.end) return;
   const g = layerCorners(L);
-  ctx.lineWidth = 1.4 / k; ctx.strokeStyle = '#00f0ff'; ctx.shadowColor = '#00f0ff'; ctx.shadowBlur = 8;
+  ctx.lineWidth = 1.4 / k; ctx.strokeStyle = '#3d8bff'; ctx.shadowBlur = 0;
   ctx.beginPath(); g.corners.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.stroke();
   ctx.shadowBlur = 0;
   const top = [(g.corners[0][0] + g.corners[1][0]) / 2, (g.corners[0][1] + g.corners[1][1]) / 2];
   ctx.beginPath(); ctx.moveTo(...top); ctx.lineTo(...g.rotH); ctx.stroke();
   const hs = 9 / k;
-  ctx.fillStyle = '#05060a';
-  ctx.beginPath(); ctx.arc(g.rotH[0], g.rotH[1], hs, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#ff2bd6'; ctx.stroke();
-  const c2 = g.corners[2]; ctx.fillRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2); ctx.strokeStyle = '#00f0ff'; ctx.strokeRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2);
-  ctx.beginPath(); ctx.arc(g.tr.x, g.tr.y, 3 / k, 0, Math.PI * 2); ctx.fillStyle = '#c6ff00'; ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(g.rotH[0], g.rotH[1], hs, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#3d8bff'; ctx.stroke();
+  const c2 = g.corners[2]; ctx.fillRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2); ctx.strokeStyle = '#3d8bff'; ctx.strokeRect(c2[0] - hs, c2[1] - hs, hs * 2, hs * 2);
+  ctx.beginPath(); ctx.arc(g.tr.x, g.tr.y, 3 / k, 0, Math.PI * 2); ctx.fillStyle = '#3d8bff'; ctx.fill();
 }
 
 function stagePoint(e) { const r = stage.getBoundingClientRect(); return [(e.clientX - r.left) / viewScale, (e.clientY - r.top) / viewScale]; }
@@ -347,13 +347,13 @@ function renderTimeline() {
   addTicks(ruler, 0, G.extT);
   const endH = h('div', { class: 'tl-end-h', id: 'tlEndH', 'data-testid': 'end-marker', title: 'Drag to change the project duration' }, h('span', {}, 'END'));
   bindEnd(endH); ruler.append(endH);
-  inner.append(h('div', { class: 'tl-row tl-head' }, h('div', { class: 'tl-label corner' }, `${p.layers.length} LAYERS`), ruler));
+  inner.append(h('div', { class: 'tl-row tl-head' }, h('div', { class: 'tl-label corner' }, `${p.layers.length} Layers`), ruler));
   bindScrub(ruler);
   for (const L of p.layers) {
     const sel = L.id === S.sel;
     const label = h('div', { class: 'tl-label', onclick: () => { S.sel = L.id; S.selKeys.clear(); if (S.tab === 'add') S.tab = 'layer'; refreshAll(); } },
       h('button', { class: 'vis', title: 'Visibility', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
-      h('span', { class: 'ln t-' + L.type }, L.name));
+      icon(TYPE_ICON[L.type] || 'layer', 'ti'), h('span', { class: 'ln t-' + L.type }, L.name));
     const track = h('div', { class: 'tl-track' });
     track.addEventListener('click', e => { if (e.target === track) { if (S.sel) return deselect(); const r = track.getBoundingClientRect(); seek((e.clientX - r.left) / S.pps); } });
     const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (L.visible ? '' : ' hidden'), style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px' } },
@@ -380,7 +380,7 @@ function renderTimeline() {
       }
     }
   }
-  if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap ＋ ADD to create a layer'));
+  if (!p.layers.length) inner.append(h('div', { class: 'tl-empty' }, 'Tap + to add a layer'));
   // empty space below the last track (pannable, keeps the grid going)
   inner.append(h('div', { class: 'tl-row tl-pad', 'data-testid': 'tl-pad', style: { height: Math.max(44, Math.round(tl.clientHeight * 0.45)) + 'px' } },
     h('div', { class: 'tl-label pad' }), h('div', { class: 'tl-track pad', onclick: () => S.sel && deselect() })));
@@ -642,10 +642,15 @@ function bindEnd(el) {
 }
 
 // ---------------- panels ----------------
-const TABS = [['add', 'Add', 'plus'], ['layer', 'Layer', 'layer'], ['style', 'Style', 'style'], ['fx', 'FX', 'fx'], ['blend', 'Blend', 'blend'], ['ease', 'Ease', 'ease'], ['project', 'Project', 'project']];
+const TABS = [['add', 'Add', 'plus'], ['layer', 'Move & Transform', 'move'], ['style', 'Color & Fill', 'fill'], ['border', 'Border & Shadow', 'border'], ['fx', 'Effects', 'fx'], ['blend', 'Blending & Opacity', 'blend'], ['ease', 'Keyframes', 'kfs']];
+const TAB_TITLE = { add: 'Add', layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Keyframes', project: 'Project Settings' };
+const TYPE_ICON = { shape: 'rect', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust' };
+function pickTab(id) { S.tab = S.tab === id && isMobile() ? null : id; renderTabs(); renderPanel(); requestAnimationFrame(() => { layoutStage(); drawFrame(); }); }
 function renderTabs() {
-  const mk = () => TABS.map(([id, label, ic]) => h('button', { class: 'tab' + (S.tab === id ? ' on' : ''), 'data-tab': id, 'data-testid': 'tab-' + id, onclick: () => { S.tab = S.tab === id && isMobile() ? null : id; renderTabs(); renderPanel(); requestAnimationFrame(() => { layoutStage(); drawFrame(); }); } }, icon(ic), h('span', {}, label)));
-  $('#tabs').replaceChildren(...mk());
+  const mk = () => TABS.map(([id, label, ic]) => h('button', { class: 'tab' + (id === 'add' ? ' tab-add' : '') + (S.tab === id ? ' on' : ''), 'data-tab': id, 'data-testid': 'tab-' + id, title: label, onclick: () => pickTab(id) }, icon(ic), id === 'add' ? null : h('span', {}, label)));
+  const sl = $('#tabs').scrollLeft; $('#tabs').replaceChildren(...mk()); $('#tabs').scrollLeft = sl;
+  $('#btnSettings').classList.toggle('on', S.tab === 'project');
+  $('#panelTitle').textContent = TAB_TITLE[S.tab] || '';
   document.body.classList.toggle('panel-open', !!S.tab);
 }
 const isMobile = () => window.innerWidth < 900;
@@ -660,7 +665,8 @@ function renderPanel() {
   switch (S.tab) {
     case 'add': content = panelAdd(); break;
     case 'layer': content = L ? panelLayer(L) : need('Select a layer on the canvas or timeline.'); break;
-    case 'style': content = L ? panelStyle(L) : need('Select a layer to style it.'); break;
+    case 'style': content = L ? panelStyle(L) : need('Select a layer to change its color & fill.'); break;
+    case 'border': content = L ? panelBorder(L) : need('Select a layer to add a border or shadow.'); break;
     case 'fx': content = L ? panelFx(L) : need('Select a layer (or add an Adjustment layer) to apply effects.'); break;
     case 'blend': content = L ? panelBlend(L) : need('Select a layer to change its blend mode.'); break;
     case 'ease': content = panelEase(L); break;
@@ -676,10 +682,14 @@ function panelAdd() {
   return h('div', {},
     section('Shapes', h('div', { class: 'grid' },
       ...['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line'].map(k => btn(k, k, () => addLayer(makeLayer(P(), 'shape', { kind: k })), 'add-' + k)))),
-    section('Layers', h('div', { class: 'grid' },
-      btn('text', 'Text', () => addLayer(makeLayer(P(), 'text')), 'add-text'),
+    section('Media', h('div', { class: 'grid' },
+      btn('image', 'Image & Video', () => $('#fileMedia').click(), 'add-media'))),
+    section('Text', h('div', { class: 'grid' },
+      btn('text', 'Text', () => addLayer(makeLayer(P(), 'text')), 'add-text'))),
+    section('Audio', h('div', { class: 'grid' },
+      h('button', { class: 'add-btn', disabled: true, title: 'Audio layers are not supported yet' }, icon('audio'), h('span', {}, 'Audio (soon)')))),
+    section('Element', h('div', { class: 'grid' },
       btn('solid', 'Solid', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
-      btn('media', 'Image / Video', () => $('#fileMedia').click(), 'add-media'),
       btn('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); L.effects.push(makeEffect('coloradj')); addLayer(L); S.tab = 'fx'; renderTabs(); renderPanel(); }, 'add-adjust'),
       btn('demo', 'Load Demo', () => { if (confirm('Replace with a new demo project?')) setProject(demoProject(P().aspect)); }, 'add-demo'))));
 }
@@ -732,7 +742,6 @@ function panelStyle(L) {
       s.kind === 'star' ? N('Inner', s, 'inner', 0.05, 1, 0.01) : null,
       s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null));
     out.append(section('Fill', T('Fill', s, 'fillOn'), C('Color', s, 'fill'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
-    out.append(section('Stroke', N('Width', s, 'strokeW', 0, 120), C('Color', s, 'stroke')));
   } else if (L.type === 'text') {
     const t = L.text;
     const ta = h('textarea', { class: 'txt', rows: 2, 'data-testid': 'text-content' }, t.content);
@@ -743,7 +752,7 @@ function panelStyle(L) {
       N('Size', t, 'size', 8, 800), N('Weight', t, 'weight', 100, 900, 100), N('Tracking', t, 'tracking', -0.2, 1, 0.01), N('Line Ht', t, 'lineHeight', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
       T('Italic', t, 'italic')));
-    out.append(section('Color', C('Fill', t, 'fill'), N('Stroke', t, 'strokeW', 0, 60), C('Stroke Color', t, 'stroke')));
+    out.append(section('Color', C('Fill', t, 'fill')));
   } else if (L.type === 'solid') {
     const s = L.solid;
     out.append(section('Solid', C('Color', s, 'color'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
@@ -756,6 +765,21 @@ function panelStyle(L) {
       L.type === 'video' ? N('Volume', m, 'volume', 0, 1, 0.01) : null,
       L.type === 'video' ? N('Offset s', m, 'offset', 0, 600, 0.05) : null));
   } else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no style — add effects in FX; they apply to everything below.'));
+  return out;
+}
+
+function panelBorder(L) {
+  const out = h('div', {});
+  const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
+  const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => commit({ silent: true }) });
+  if (L.type === 'shape') out.append(section('Border', N('Width', L.shape, 'strokeW', 0, 120, 1, 'border-width'), C('Color', L.shape, 'stroke')));
+  else if (L.type === 'text') out.append(section('Border', N('Width', L.text, 'strokeW', 0, 60, 1, 'border-width'), C('Color', L.text, 'stroke')));
+  if (L.type === 'adjust') { out.append(h('div', { class: 'hint' }, 'Adjustment layers have no border or shadow.')); return out; }
+  const sh = L.shadow || (L.shadow = { on: false, color: '#000000', blur: 24, dx: 0, dy: 16, alpha: 0.6 });
+  out.append(section('Shadow', toggle({ label: 'Shadow', value: sh.on, testid: 'shadow-on', onChange: v => { sh.on = v; commit(); } }),
+    sh.on ? C('Color', sh, 'color') : null, sh.on ? N('Blur', sh, 'blur', 0, 200) : null,
+    sh.on ? N('Offset X', sh, 'dx', -200, 200) : null, sh.on ? N('Offset Y', sh, 'dy', -200, 200) : null,
+    sh.on ? N('Opacity', sh, 'alpha', 0, 1, 0.01) : null));
   return out;
 }
 
@@ -887,6 +911,34 @@ function changeAspect(a) {
   p.w = w; p.h = hh; p.aspect = a; commit();
 }
 
+// ---------------- home (project list) ----------------
+function thumbFor(p) {
+  const c = document.createElement('canvas'), k = 96 / Math.max(p.w, p.h);
+  c.width = Math.max(8, Math.round(p.w * k)); c.height = Math.max(8, Math.round(p.h * k));
+  try { new Renderer().render(p, Math.min(1.5, p.duration / 2), c); } catch {}
+  return c;
+}
+function showHome() {
+  if (S.playing) togglePlay(false);
+  if (P()) store.saveProject(P());
+  const list = store.listProjects();
+  $('#homeList').replaceChildren(...(list.length ? list.map(x => {
+    const pr = store.loadProject(x.id);
+    const open = () => { const q = store.loadProject(x.id); if (q) { setProject(q); hideHome(); } };
+    return h('div', { class: 'pcard', 'data-testid': 'home-project' },
+      h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, h('span', { class: 'pc-th' }, pr ? thumbFor(pr) : ''),
+        h('span', { class: 'pc-tx' }, h('b', {}, x.name), h('em', {}, `${x.aspect} · ${pr ? pr.duration.toFixed(1) + 's' : ''} · ${new Date(x.modified).toLocaleDateString()}`))),
+      h('button', { class: 'ib', title: 'Delete', onclick: () => { if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); if (P() && x.id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', 'Project 1')); } showHome(); } } }, icon('more')));
+  }) : [h('div', { class: 'h-empty' }, 'No projects yet. Tap + to create one.')]));
+  $('#home').hidden = false; document.body.classList.add('home-open');
+}
+function hideHome() { $('#home').hidden = true; document.body.classList.remove('home-open'); requestAnimationFrame(() => { layoutStage(); drawFrame(); renderTimeline(); }); }
+function openHomeSettings() {
+  openDialog('Settings', h('div', { class: 'plist' },
+    h('button', { class: 'act wide', onclick: () => { dlg.close(); $('#fileJson').click(); } }, icon('up'), 'Import project (.json)'),
+    h('div', { class: 'hint small' }, 'KINETIC saves projects on this device. Add it to the Home Screen from Safari’s share menu for full-screen use.')));
+}
+
 // ---------------- dialogs ----------------
 const dlg = $('#dlg');
 function openDialog(title, body) {
@@ -906,7 +958,7 @@ function newProjectFlow() {
   openDialog('New Project', h('div', { class: 'plist' },
     h('div', { class: 'hint' }, 'Pick an aspect ratio'),
     h('div', { class: 'grid' }, Object.entries(ASPECTS).map(([a, [w, hh]]) =>
-      h('button', { class: 'add-btn aspect', 'data-testid': 'new-' + a, onclick: () => { const p = newProject(a, 'Project ' + (store.listProjects().length + 1)); setProject(p); dlg.close(); S.tab = 'add'; renderTabs(); renderPanel(); } },
+      h('button', { class: 'add-btn aspect', 'data-testid': 'new-' + a, onclick: () => { const p = newProject(a, 'Project ' + (store.listProjects().length + 1)); setProject(p); dlg.close(); hideHome(); S.tab = 'add'; renderTabs(); renderPanel(); } },
         h('i', { style: { aspectRatio: `${w}/${hh}` } }), h('span', {}, a))))));
 }
 async function exportJSON() {
@@ -919,7 +971,7 @@ async function importJSON(file) {
     const p = JSON.parse(await file.text());
     if (!p.layers || !p.w) throw new Error('not a project');
     if (p.media) { for (const [id, url] of Object.entries(p.media)) await store.putMedia(id, await store.dataURLToBlob(url)); delete p.media; }
-    p.id = uid(); setProject(p); toast('Project loaded');
+    p.id = uid(); setProject(p); hideHome(); toast('Project loaded');
   } catch (e) { console.error(e); toast('Invalid project file'); }
 }
 function exportPNG() {
@@ -975,11 +1027,15 @@ function openExport() {
 
 // ---------------- wiring ----------------
 function buildChrome() {
-  $('#btnProjects').replaceChildren(icon('menu')); $('#btnUndo').replaceChildren(icon('undo')); $('#btnRedo').replaceChildren(icon('redo'));
-  $('#btnExport').prepend(icon('export'));
+  $('#btnProjects').replaceChildren(icon('back')); $('#btnSettings').replaceChildren(icon('gear')); $('#panelClose').replaceChildren(icon('check')); $('#btnUndo').replaceChildren(icon('undo')); $('#btnRedo').replaceChildren(icon('redo'));
+  $('#btnExport').replaceChildren(icon('share'));
+  $('#btnSettings').onclick = () => pickTab('project');
+  $('#panelClose').onclick = () => { S.tab = isMobile() ? null : 'add'; renderTabs(); renderPanel(); requestAnimationFrame(() => { layoutStage(); drawFrame(); }); };
+  $('#homeSettings').replaceChildren(icon('gear')); $('#homeNew').replaceChildren(icon('plus'));
+  $('#homeNew').onclick = () => newProjectFlow(); $('#homeSettings').onclick = openHomeSettings;
   $('#btnStart').replaceChildren(icon('start')); $('#btnLoop').replaceChildren(icon('loop'));
   $('#btnKey').prepend(icon('key')); $('#zoomIn').replaceChildren(icon('zin')); $('#zoomOut').replaceChildren(icon('zout'));
-  $('#btnProjects').onclick = openProjects;
+  $('#btnProjects').onclick = showHome;
   $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
   $('#btnExport').onclick = openExport;
   $('#btnPlay').onclick = () => togglePlay();
@@ -1016,8 +1072,9 @@ function boot() {
   if (!p) p = demoProject('9:16');
   renderTabs();
   setProject(p);
+  if (!/[?&#]editor/.test(location.href)) showHome();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
-  window.__app = { S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect };
+  window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect };
 }
 boot();

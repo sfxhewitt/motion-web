@@ -59,6 +59,7 @@ def main():
 
         pg.goto(BASE); pg.wait_for_function('window.__app && __app.project')
         P('localStorage.clear()'); pg.reload(); pg.wait_for_function('window.__app && __app.project'); pg.wait_for_timeout(600)
+        pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
         # page-lock & meta checks
         css = P("""(() => { const cs = e => getComputedStyle(e); const h = document.documentElement, b = document.body, tl = document.getElementById('tlScroll');
           return { hPos: cs(h).position, bPos: cs(b).position, hOv: cs(h).overflow, bOver: cs(b).overscrollBehaviorY, bTA: cs(b).touchAction, appTA: cs(document.getElementById('app')).touchAction,
@@ -67,7 +68,7 @@ def main():
               css['hPos'] == 'fixed' and css['bPos'] == 'fixed' and css['hOv'] == 'hidden' and css['bOver'] == 'none' and css['bTA'] == 'none' and css['appTA'] == 'none' and css['tlTA'] == 'none', css)
         check("status bar style stays 'default'", css['status'] == 'default', css['status'])
         sw = P("fetch('sw.js').then(r => r.text())")
-        check('service worker cache bumped to kntc-v4', "'kntc-v4'" in sw)
+        check('service worker cache bumped to kntc-v5', "'kntc-v5'" in sw)
 
         # more layers so the timeline overflows vertically, deselect, zoom in so it overflows horizontally
         for _ in range(4): pg.click('[data-testid=add-rect]') if P('__app.S.tab') == 'add' else (pg.click('[data-testid=tab-add]'), pg.click('[data-testid=add-rect]'))
@@ -306,6 +307,7 @@ def main():
         Lt = layer(ki)
         check('trimming the end past the duration works (with auto-scroll)', Lt['end'] > dur0 + 1 and P(STATE)['sl'] > slT + 100, (dur0, Lt['end']))
         pg.wait_for_timeout(700); pg.reload(); pg.wait_for_function('window.__app && __app.project'); pg.wait_for_timeout(500)
+        pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(200)
         Lr = P(f"(() => {{ const L = __app.project.layers.find(l => l.id === '{L0['id']}'); return L && {{ start: L.start, end: L.end }}; }})()")
         check('clip end beyond the duration persists after save/reload', Lr and abs(Lr['end'] - Lt['end']) < 1e-6 and Lr['end'] > P('__app.project.duration'), (Lt['end'], Lr, P('__app.project.duration')))
         check('no page errors', not [e for e in errs if 'GL Driver' not in e], errs[:5])
