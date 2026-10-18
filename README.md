@@ -21,7 +21,7 @@ The light home screen lists your projects (⋯ menu: rename / duplicate / delete
 - **⋯ layer menu** (dropdown under the ⋯ button, like Alight): Save to My Elements (coming soon), Flip Horizontally / Vertically, Fit / Fill / Stretch to Composition Area, Create Clipping Mask (the layer shows only inside the layer below), Convert to Outline (shapes), colour-tag swatches for the timeline clip, plus Center, Hide, Lock, Move up / down, Easing and Rename. Tap outside to close.
 - **Deselect:** a short tap on empty space (preview outside any layer, the dark area around it, empty timeline space) deselects; pans, long presses and pinches don't.
 - **Canvas gestures:** drag to move, use the corner handle to scale and the knob to rotate, pinch with two fingers to scale and rotate, with snapping to centre.
-- **21 effects** (WebGL, original shaders): Gaussian/Motion/Zoom Blur, Neon Glow, Color Adjust (with hue cycling), Duotone, Invert, Posterize, Chromatic Split (pulsing), Glitch, Pixelate, CRT Scanlines, Grain, Vignette, Wave Warp, Swirl, Kaleidoscope, Mirror, and the motion effects Shake, Pulse Scale and Auto Spin. Effects stack, and you can toggle and reorder them.
+- **183 effects in 12 categories** (Color & Light 29, Drawing & Edge 17, Blur 18, Distortion/Warp 27, Procedural 23, 3D 19, Move/Transform 12, Repeat 7, Matte/Mask/Key 11, Opacity/Visibility 7, Text 6, Other 7). They run on a WebGL1 engine (`js/fx/`) with original shaders: pyramid blurs, bloom, true 3D primitives, keying, procedural noise, text animators, and time effects such as motion blur, echo and time quantization. Every parameter can be keyframed, and preview and export render the same. Effects are added from an Add Effect browser with a carousel, category pages, live search with tags, and a preset sheet (Standard Settings, Transition In/Out Fast/normal, plus effect-specific presets). They sit in collapsible cards with a ⋯ menu (Reset to Defaults, Duplicate, Copy/Paste Effect, Effect Details) and ruler + value-box parameters. The Easing Curve panel opens from the graph button (Curve / Physics / Steps presets, draggable bezier handles, a yellow dot at the playhead), and "Keyframes Required" appears when there are fewer than two keys. Alight's Parenting Helper is left out. Projects that used the old effects are migrated.
 - **20 blend modes:** normal, add, screen, lighten, dodge, multiply, darken, burn, overlay, soft/hard light, difference, exclusion, hue, saturation, color, luminosity, clip-to-below, alpha mask and cut-out.
 - **Undo/redo**, with autosave to `localStorage` (media goes in IndexedDB), a projects list, and JSON save/load with media embedded.
 - **Export:** MediaRecorder renders in real time at 480p–4K, 24–60 fps, with a bitrate setting. You get **MP4 (H.264) on Safari** and WebM (or MP4 on recent Chrome) elsewhere, and video-layer audio is mixed in. On iOS you can save to Photos via Share. There is also a PNG export of the current frame.
@@ -38,9 +38,13 @@ Playwright (Chromium) runs in two modes: desktop at 1440×900, and iPhone emulat
 ```
 python3 tests/e2e.py        # full feature suite, desktop + iPhone
 python3 tests/gestures.py   # timeline touch gestures with real touch input (440×956)
+python3 tests/effects.py    # Add Effect browser, search, presets, cards/menu, easing, every effect renders, preview/export parity
+python3 tests/fxcompile.py  # compiles every effect shader
+python3 tests/build_thumbs.py  # rebuilds icons/fx-thumbs.webp + js/fx/thumbs.js + /workspace/kntc-shots/effects/contact-sheet.png
+python3 tests/fx_shots.py   # before/after shots of key effects -> /workspace/kntc-shots/effects
 python3 tests/shots.py      # iPhone screenshots -> /workspace/kntc-shots (+ compare/ vs reference/ if present)
 ```
 The suite covers layer creation, keyframes and interpolation, easing, every effect, blend modes, undo/redo, persistence, JSON round-trip, media import, WebM and MP4 export (checking the output decodes), canvas dragging and the PWA manifest.
 
 ## Structure
-`js/state.js` (model, keyframes, history) · `js/easing.js` · `js/effects.js` (catalogue + WebGL pipeline) · `js/render.js` (compositor) · `js/export.js` · `js/storage.js` · `js/ui.js` · `js/main.js` (UI/timeline/panels)
+`js/state.js` (model, keyframes, history) · `js/easing.js` · `js/fx/*.js` (WebGL engine + effect definitions) · `js/effects.js` (search, presets, transform/text/shape effect hooks, migration) · `js/fxui.js` (Effects panel, browser, Easing Curve) · `js/fxsample.js` (sample scenes for thumbnails/tests) · `js/render.js` (compositor) · `js/export.js` · `js/storage.js` · `js/ui.js` · `js/main.js` (UI/timeline/panels)

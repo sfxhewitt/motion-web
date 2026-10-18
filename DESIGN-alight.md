@@ -134,3 +134,13 @@ Clipboard `kntc.clipboard` and presets `kntc.presets` live in localStorage.
 - Edit Shape: Size ruler (scrolling tick scale, 8pt per 10 units, labels every 50, mint centre tick, momentum) with X / Y boxes.
 - Gear: Project Settings sheet styled like Create (name, ratio chips, Resolution, Frame Rate, Background, Duration, project actions), X closes; changes apply at once.
 - Play bar: ◁◇ / ◇▷ previous / next keyframe buttons appear while a layer is selected.
+
+## Effects (v11 — matched to the usage videos in /workspace/refvid)
+- **Effects panel**: an empty list shows a centred **+ Add Effect**. Each effect is a collapsible card (▸ name · ⋯ · trash). Each param row has a label chip (tap to select it), a ruler (ticks + a mint centre line, momentum flick) and a value box (drag to scrub, tap to type, unit suffix).
+  The left column has ◆ (key the selected param at the playhead) and the graph button (Easing for that param's keyframe segment, or the **Keyframes Required** alert with OK).
+- **⋯ menu**: Reset to Defaults · Duplicate · Copy Effect · Effect Details, then Paste Effect · Turn Off/On · Move Up/Down.
+- **Add Effect** (full-screen sheet): X · title · search. A large carousel (Tiles, Chroma Key, Exposure / Gamma, 360° Reorient, Light Glow), a small row (Auto-Shake, Contour Strips, Oscillate), then a 12-tile category grid. Category pages use a ‹ › header to page and a 3-column thumbnail grid.
+- **Search**: "Type Here to Search" with tag chips (Auto, Camera, Layer Parenting, Property Adjust, Transform). Results update live as you type and list a thumbnail, the name with the match highlighted in mint, and the description.
+- **Preset sheet**: thumbnail, name, description, tag chips, a Guide button and a favourite star, then Standard Settings and `PRESET: XX` rows (TF Transition Out: Fast, NF Transition In: Fast, IN, OU, plus effect-specific rows such as HO/VE for Auto-Shake).
+- **Easing Curve**: a graph with handles, and a bar with ‹ preset name ›. A preset column (Curve / Physics / Steps groups on the left) and a yellow dot that rides the curve at the playhead. Reverse sits in the left column.
+- Knowingly different: Parenting Helper isn't implemented. The thumbnails are our own renders of procedural sample scenes.
