@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#05060a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kinetic">
+<title>KINETIC // motion</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <button id="btnProjects" class="ib" title="Projects" data-testid="btn-projects"></button>
+    <div class="brand"><b>KNTC</b><span>//motion</span></div>
+    <input id="projName" class="pname" aria-label="Project name" spellcheck="false">
+    <div class="sp"></div>
+    <button id="btnUndo" class="ib" title="Undo" data-testid="undo"></button>
+    <button id="btnRedo" class="ib" title="Redo" data-testid="redo"></button>
+    <button id="btnExport" class="primary" data-testid="btn-export">Export</button>
+  </header>
+  <main id="stageWrap">
+    <div id="stage"><canvas id="view" data-testid="view"></canvas><canvas id="overlay"></canvas></div>
+    <div id="hud"></div>
+  </main>
+  <section id="transport">
+    <button id="btnStart" class="ib" title="Go to start"></button>
+    <button id="btnPlay" class="ib play" title="Play / Pause (space)" data-testid="play"></button>
+    <div class="tcbox"><span id="tc">00:00.00</span><span class="sl">/</span><span id="dur">00:06.00</span><span id="frame">F000</span></div>
+    <div class="sp"></div>
+    <button id="btnKey" class="keybtn" title="Keyframe all transform props (K)" data-testid="key-all">KEY</button>
+    <button id="btnLoop" class="ib on" title="Loop"></button>
+    <button id="zoomOut" class="ib" title="Zoom timeline out"></button>
+    <button id="zoomIn" class="ib" title="Zoom timeline in"></button>
+  </section>
+  <section id="timeline"><div id="tlScroll" data-testid="timeline"></div></section>
+  <aside id="panel"><div id="panelBody" data-testid="panel"></div></aside>
+  <nav id="tabs"></nav>
+</div>
+<dialog id="dlg"></dialog>
+<input type="file" id="fileMedia" accept="image/*,video/*" hidden data-testid="file-media">
+<input type="file" id="fileJson" accept=".json,application/json" hidden data-testid="file-json">
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

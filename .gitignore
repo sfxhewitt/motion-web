@@ -1,0 +1,7 @@
+test-output/
+node_modules/
+__pycache__/
+*.apk
+*.apkm
+*.xapk
+jadx-out/
