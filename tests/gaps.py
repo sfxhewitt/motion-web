@@ -275,6 +275,20 @@ with sync_playwright() as pw:
     pg.click('[data-testid=is3d]'); pg.wait_for_timeout(80)
     check('Move & Transform has a 3D Layer switch with Z / Rotate X / Rotate Y', pg.locator('[data-testid=prop-rotX]').count() == 1 and pg.locator('[data-testid=prop-z-key]').count() == 1)
 
+    # --- smudge brush + arrow-key nudge ---
+    r = E("""async () => { const R = await import('./js/render.js'), st = await import('./js/state.js');
+      const p = st.newProject('1:1', 'sm', { bg: '#000000' }); p.w = p.h = 200; const L = st.makeLayer(p, 'draw'); L.props.x = L.props.y = 100; p.layers = [L];
+      L.draw.strokes.push({ tool: 'pencil', color: '#ffffff', size: 30, pts: [[-60, 0], [-20, 0]] });
+      const c = document.createElement('canvas'); c.width = c.height = 200; const r = new R.Renderer();
+      const lit = () => { r.render(p, 0, c, { skipMediaSync: true }); const d = c.getContext('2d').getImageData(0, 100, 200, 1).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 40) n++; return n; };
+      const before = lit(); L.draw.strokes.push({ tool: 'smudge', color: '#ffffff', size: 30, pts: [[-30, 0], [10, 0], [40, 0]] }); const after = lit();
+      return { before, after }; }""")
+    check('smudge brush drags paint along the stroke', r['after'] > r['before'] + 10, r)
+    r = E("""() => { const A = __app, L = A.project.layers.find(l => l.type === 'shape' && !l.group && !l.locked); A.selectLayer(L.id); delete L.keys.x; delete L.keys.y; const x0 = L.props.x, y0 = L.props.y;
+      document.activeElement?.blur(); const k = (key, shiftKey = false) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true }));
+      k('ArrowRight'); k('ArrowDown', true); return [L.props.x - x0, L.props.y - y0]; }""")
+    check('arrow keys nudge the selected layer (Shift: 10 px)', r == [1, 10], r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

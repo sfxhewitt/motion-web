@@ -599,7 +599,6 @@ stage.addEventListener('pointerdown', e => {
   }
   if (S.tab === 'draw' && L?.type === 'draw') {
     if (ptrs.size > 1) { if (gesture?.mode === 'stroke') { L.draw.strokes.pop(); drawFrame(); } gesture = null; return; }
-    if (S.draw.tool === 'smudge') { toast('Smudge: coming soon'); return; }
     const st = { tool: S.draw.tool, color: S.draw.color, size: S.draw.size, pts: [toLocal(L, px, py).map(v => +v.toFixed(1))] };
     L.draw.strokes.push(st); gesture = { mode: 'stroke', L, st }; drawFrame(); return;
   }
@@ -1622,8 +1621,8 @@ function panelDraw(L) {
         h('button', { class: 'ib', title: 'Clear drawing', 'data-testid': 'draw-clear', onclick: () => { if (L.draw.strokes.length && confirm('Clear this drawing?')) { L.draw.strokes = []; commit(); } } }, icon('canvas')),
         h('button', { class: 'ib', title: 'Colour picker', onclick: openColorPicker }, icon('palette')))));
   const right = h('div', { class: 'sub-r' }, ['pencil', 'brush', 'smudge', 'eraser'].map(t =>
-    h('button', { class: 'ib' + (d.tool === t ? ' on' : '') + (t === 'smudge' ? ' dim' : ''), title: t[0].toUpperCase() + t.slice(1), 'data-testid': 'tool-' + t,
-      onclick: () => { if (t === 'smudge') return toast('Smudge: coming soon'); d.tool = t; renderPanel(); } }, icon(t))));
+    h('button', { class: 'ib' + (d.tool === t ? ' on' : ''), title: t[0].toUpperCase() + t.slice(1), 'data-testid': 'tool-' + t,
+      onclick: () => { d.tool = t; renderPanel(); } }, icon(t))));
   return { content, right };
 }
 
@@ -2325,8 +2324,12 @@ function buildChrome() {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
       else if (selLayer()) deleteLayer(selLayer());
-    } else if (e.key === 'ArrowLeft') seek(S.t - 1 / P().fps);
-    else if (e.key === 'ArrowRight') seek(S.t + 1 / P().fps);
+    } else if (e.key.startsWith('Arrow') && selLayer() && !selLayer().locked && visualLayer(selLayer()) && !e.altKey) { // nudge 1 px (Shift: 10 px)
+      e.preventDefault(); const L = selLayer(), d = e.shiftKey ? 10 : 1, dx = { ArrowLeft: -d, ArrowRight: d }[e.key] || 0, dy = { ArrowUp: -d, ArrowDown: d }[e.key] || 0;
+      writeProp(L, 'x', S.t, +(valueAt(L, 'x', S.t) + dx).toFixed(2)); writeProp(L, 'y', S.t, +(valueAt(L, 'y', S.t) + dy).toFixed(2)); commit({ silent: true });
+    }
+    else if (e.key === 'ArrowLeft' || e.key === ',') seek(S.t - 1 / P().fps);
+    else if (e.key === 'ArrowRight' || e.key === '.') seek(S.t + 1 / P().fps);
   });
 }
 function afterHistory(s) { closeLayerMenu(); closeCopyMenu(); S.project = s; for (const id of S.multi) if (!s.layers.some(l => l.id === id)) S.multi.delete(id); if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }

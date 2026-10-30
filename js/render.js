@@ -185,6 +185,16 @@ function drawStrokes(ctx, L, project, sfx) {
     if (st.tool === 'brush') { ctx.globalAlpha *= 0.85; ctx.shadowColor = st.color; ctx.shadowBlur = lw * 0.6 * (ctx.getTransform().a || 1); }
     ctx.lineWidth = st.tool === 'brush' ? lw * 0.7 : lw;
     let pts = st.pts;
+    if (st.tool === 'smudge') { // drag the pixels under the brush along the stroke (reads what this layer drew so far)
+      const m = ctx.getTransform(), k = Math.hypot(m.a, m.b) || 1, r = lw / 2, R = r * k, sp = resample(pts, Math.max(1, r * 0.25));
+      for (let i = 1; i < sp.length; i++) {
+        const a = m.transformPoint({ x: sp[i - 1][0], y: sp[i - 1][1] }), b = sp[i];
+        ctx.save(); ctx.globalCompositeOperation = 'source-over'; ctx.shadowBlur = 0; ctx.globalAlpha = 0.65;
+        ctx.beginPath(); ctx.arc(b[0], b[1], r, 0, Math.PI * 2); ctx.clip();
+        ctx.drawImage(ctx.canvas, a.x - R, a.y - R, 2 * R, 2 * R, b[0] - r, b[1] - r, 2 * r, 2 * r); ctx.restore();
+      }
+      ctx.restore(); return;
+    }
     if (pts.length === 1) { if (!prog || a1 > from) { ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); } ctx.restore(); return; }
     if (prog || tap) pts = resample(pts, Math.max(0.5, Math.min(lw * 0.25, len / 400)));
     if (prog) { const n = pts.length - 1, u0 = Math.max(0, (a0 - from) / len), u1 = Math.min(1, (a1 - from) / len); pts = pts.slice(Math.floor(u0 * n), Math.ceil(u1 * n) + 1); if (pts.length < 2) { ctx.restore(); return; } }
