@@ -110,7 +110,8 @@ async function importFont(file, L) {
   if (L?.type === 'text') L.text.font = 'f:' + id;
   commit(); toast('Font added: ' + name);
 }
-async function hydrateMedia(project) {
+async function hydrateMedia(project, depth = 0) {
+  if (depth < 3) for (const L of project.layers) if (L.type === 'comp') { const sub = store.loadProject(L.comp.id); if (sub) await hydrateMedia(sub, depth + 1); }
   for (const f of project.fonts || []) { try { const b = await store.getMedia(f.id); if (b) await registerFont(f.id, b); } catch (e) { console.warn(e); } }
   let any = false;
   for (const L of project.layers) {
@@ -191,6 +192,38 @@ function deleteLayer(L) {
   const ls = P().layers, gone = new Set([L.id, ...descendants(L).filter(m => m.group).map(m => m.id)]);
   for (const m of ls) if (!gone.has(m.id) && gone.has(m.parent)) reparent(m, null); // children keep their place on screen
   P().layers = ls.filter(m => !gone.has(m.id)); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+}
+// ---- My Elements: layers (with their group members / children) saved for reuse in any project ----
+const myElements = () => { try { return JSON.parse(localStorage.getItem('kntc.elements')) || []; } catch { return []; } };
+function saveElement(L) {
+  const layers = [L, ...descendants(L)].map(clone), els = myElements();
+  els.unshift({ id: uid(), name: L.name, created: Date.now(), layers });
+  try { localStorage.setItem('kntc.elements', JSON.stringify(els.slice(0, 60))); toast('Saved to My Elements'); } catch { toast('Storage is full'); }
+}
+// fresh ids throughout, internal parent / group links re-pointed, starting at the playhead
+function insertElement(el) {
+  const map = new Map(el.layers.map(l => [l.id, uid()])), t0 = Math.min(...el.layers.map(l => l.start)), dt = snapT(S.t) - t0;
+  const made = el.layers.map(l => { const c = clone(l); c.id = map.get(l.id); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
+    if (c.parent) c.parent = map.get(c.parent) || undefined; if (c.group) c.group = map.get(c.group) || undefined; if (!c.parent) delete c.parent; if (!c.group) delete c.group;
+    shiftLayer(c, dt); return c; });
+  P().layers.unshift(...made); S.sel = made[0].id; S.multi.clear(); S.tab = null; commit(); toast('Added ' + el.name);
+}
+function openElements() {
+  const els = myElements(), projs = store.listProjects().filter(x => x.id !== P().id);
+  const row = (label, sub, fn, tid, del) => h('div', { class: 'el-row' }, h('button', { class: 'act wide', 'data-testid': tid, onclick: fn }, h('b', {}, label), h('em', {}, sub)), del || null);
+  openDialog('Element / Project', h('div', { class: 'plist', 'data-testid': 'elements' },
+    h('div', { class: 'sec-h' }, 'My Elements'),
+    els.length ? null : h('div', { class: 'hint' }, 'Save a layer or group with ⋯ › Save to My Elements to reuse it here.'),
+    ...els.map(el => row(el.name, `${el.layers.length} layer${el.layers.length > 1 ? 's' : ''}`, () => { dlg.close(); insertElement(el); }, 'el-' + el.id,
+      h('button', { class: 'mini', title: 'Delete', onclick: () => { localStorage.setItem('kntc.elements', JSON.stringify(myElements().filter(x => x.id !== el.id))); openElements(); } }, icon('trash')))),
+    h('div', { class: 'sec-h' }, 'Projects (placed as a nested element)'),
+    projs.length ? null : h('div', { class: 'hint' }, 'Other projects show up here.'),
+    ...projs.map(x => row(x.name, `${x.aspect} · ${x.layers} layers`, () => { dlg.close(); addComp(x.id); }, 'comp-' + x.id))));
+}
+async function addComp(id) {
+  const sub = store.loadProject(id); if (!sub) return toast('Project not found');
+  await hydrateMedia(sub, 1);
+  addLayer(makeLayer(P(), 'comp', { compId: id, name: sub.name, w: sub.w, h: sub.h, duration: sub.duration }));
 }
 // ---- parenting & groups ----
 const layerById = id => id ? P().layers.find(l => l.id === id) : null;
@@ -836,7 +869,7 @@ function stripThumb(L) {
   THUMB.cache.set(key, url);
   return url;
 }
-const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
+const TYPE_ICON = { comp: 'element', shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
 function renderTimeline() {
   const p = P(); if (!p) return;
   const ox = tlOriginX();
@@ -1652,7 +1685,7 @@ function sheetContent() {
       tile('camera', 'Camera', soon('Camera'), 'add-camera'),
       tile('group', 'Empty Group', () => addLayer(makeLayer(P(), 'group')), 'add-group'),
       tile('nullobj', 'Null', () => addLayer(makeLayer(P(), 'null')), 'add-null'),
-      tile('element', 'Element / Project', soon('Elements'), 'add-element'));
+      tile('element', 'Element / Project', openElements, 'add-element'));
     case 'template': return h('div', { class: 'sh-tpl' },
       tile('grid', 'View All', soon('Templates'), 'tpl-all'),
       tile('demo', 'KINETIC Neon Demo', () => { if (confirm('Replace this project with the KINETIC demo?')) setProject(demoProject(P().aspect)); }, 'add-demo'));
@@ -1721,7 +1754,7 @@ function openLayerMenu() {
     class: 'lm-sw' + (c ? '' : ' none') + ((L.tag || null) === c ? ' on' : ''), style: c ? { '--c': c } : {}, title: c ? 'Colour tag' : 'No colour tag', 'aria-label': c ? 'Tag ' + c : 'No tag',
     'data-testid': 'lm-tag-' + i, onclick: () => { L.tag = c; if (!c) delete L.tag; closeLayerMenu(); commit(); } })));
   const lmIn = h('div', { class: 'lm-in' },
-    it('Save to My Elements', 'save', soon('Save to My Elements')),
+    it('Save to My Elements', 'save', () => saveElement(L)),
     it('Flip Horizontally', 'flip-h', () => { L.flipX = !L.flipX; commit(); }, noVis),
     it('Flip Vertically', 'flip-v', () => { L.flipY = !L.flipY; commit(); }, noVis),
     it('Fit Composition Area', 'fit', () => fitLayer(L, 'fit'), noVis),
@@ -2305,7 +2338,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    importFont, addMarker, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
+    importFont, addMarker, saveElement, insertElement, addComp, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }

@@ -238,6 +238,25 @@ with sync_playwright() as pw:
     E("""() => { const i = document.querySelector('[data-testid=fill-color]'); i.value = '#123456'; i.dispatchEvent(new Event('change')); }"""); pg.wait_for_timeout(50)
     check('used colours show up as swatches', E("JSON.parse(localStorage.getItem('kntc.swatches'))[0]") == '#123456' and pg.locator('.csw').count() >= 1)
 
+    # --- My Elements and nested projects ---
+    r = E("""async () => { const A = __app, p = A.project;
+      const g = p.layers.find(l => l.type === 'group'); A.saveElement(g);
+      const el = JSON.parse(localStorage.getItem('kntc.elements'))[0];
+      const n0 = p.layers.length; A.seek(1); A.insertElement(el);
+      const made = p.layers.slice(0, el.layers.length), ng = made.find(l => l.type === 'group');
+      return { saved: el.layers.length, added: p.layers.length - n0, linked: made.filter(l => l.group).every(l => l.group === ng.id), fresh: !made.some(l => l.id === g.id), start: ng.start }; }""")
+    check('Save to My Elements / insert brings the group back with fresh ids at the playhead', r['saved'] >= 3 and r['added'] == r['saved'] and r['linked'] and r['fresh'] and abs(r['start'] - 1) < 0.05, r)
+    r = E("""async () => { const A = __app, st = await import('./js/state.js'), store = await import('./js/storage.js');
+      const sub = st.newProject('1:1', 'Sub', { bg: '#ff0000' }); sub.duration = 2; const sh = st.makeLayer(sub, 'solid'); sh.solid.color = '#00ff00'; sub.layers = [sh];
+      store.saveProject(sub); const cur = A.project; store.saveProject(cur);
+      await A.addComp(sub.id); const L = A.project.layers[0];
+      A.project.layers.forEach(l => { if (l !== L) l.visible = false; }); L.props.x = A.project.w / 2; L.props.y = A.project.h / 2; L.props.scale = 0.2;
+      const c = document.createElement('canvas'); c.width = A.project.w / 4; c.height = A.project.h / 4; A.renderer.render(A.project, 0.5, c, { skipMediaSync: true });
+      const d = c.getContext('2d').getImageData(c.width / 2, c.height / 2, 1, 1).data;
+      A.project.layers.forEach(l => (l.visible = true));
+      return { type: L.type, px: [d[0], d[1], d[2]] }; }""")
+    check('a project placed as a nested element renders inside this one', r['type'] == 'comp' and r['px'][1] > 200 and r['px'][0] < 50, r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

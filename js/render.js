@@ -1,5 +1,6 @@
 // Canvas compositor: draws layers, runs the WebGL effect chain, applies blend modes.
 import { valueAt, evalNs, mediaTime } from './state.js';
+import { loadProject } from './storage.js';
 import { FXEngine, EFFECTS, activeFx, evalParams, isShaderFx, applyTransformEffects, applyTextEffects, shapeEffects } from './effects.js';
 
 export const BLEND_MODES = [
@@ -221,6 +222,7 @@ export function layerBounds(L, project, ctx, t) {
     case 'text': { const m = textLayout(ctx || measureCtx(), t != null ? evalText(L, t, project) : L.text); return { w: m.w, h: m.h }; }
     case 'image': case 'video': return { w: L.media.w, h: L.media.h };
     case 'null': return { w: 120, h: 120 };
+    case 'comp': { const sub = compProject(L.comp.id); return sub ? { w: sub.w, h: sub.h } : { w: 100, h: 100 }; }
     case 'group': { // members' corners in the group's local space (the box stays centred on the group's origin)
       const tt = t ?? lastT, inv = layerMatrix(L, tt, project).inverse(); let mx = 60, my = 60;
       for (const m of project.layers) if (m.group === L.id && m.type !== 'audio' && m.type !== 'group') {
@@ -241,6 +243,7 @@ function shapePerimeter(s) {
 // ev: { shape, tx, sfx } = evaluated (keyframed / effect-modified) content for this frame
 function drawContent(ctx, L, project, ev = {}) {
   switch (L.type) {
+    case 'comp': { const sub = compProject(L.comp.id); if (ev.gimg && sub) ctx.drawImage(ev.gimg, -sub.w / 2, -sub.h / 2, sub.w, sub.h); break; }
     case 'group': { // members were rendered in composition space (they inherit the group's transform as their parent)
       if (!ev.gimg) break;
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(ev.gimg, 0, 0); ctx.restore(); break;
@@ -312,6 +315,13 @@ function drawContent(ctx, L, project, ev = {}) {
   }
 }
 
+// nested projects (Element / Project layers): read from storage at most every 1.5 s
+const compCache = new Map();
+export function compProject(id) {
+  const c = compCache.get(id), now = performance.now();
+  if (c && now - c.at < 1500) return c.p;
+  const p = loadProject(id); compCache.set(id, { p, at: now }); return p;
+}
 const NOT_TEX = new Set(['path']); // layer params that are paths, not texture sources
 export class Renderer {
   constructor() { this.layerCanvas = document.createElement('canvas'); this.tmp = document.createElement('canvas'); this.tmp2 = document.createElement('canvas'); this.refs = {}; this.errors = []; this._fx = null; }
@@ -326,6 +336,7 @@ export class Renderer {
     if (transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = project.bg; ctx.fillRect(0, 0, W, H); }
     this._size(this.layerCanvas, W, H);
     this._stack(ctx, project.layers.filter(L => !L.group), t, s, W, H, project, 0);
+    lastProject = project; lastT = t; // a nested project's render may have replaced them
   }
   // composite a list of layers (top first) onto ctx; a group renders its members into its own canvas first
   _stack(ctx, Ls, t, s, W, H, project, depth) {
@@ -335,6 +346,14 @@ export class Renderer {
     const canvasAt = k => { const c = pool[k] || (pool[k] = document.createElement('canvas')); this._size(c, W, H);
       const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H); return x; };
     const draw = (x, L, op) => {
+      if (L.type === 'comp') { // render the nested project at the layer's local time, at this output's pixel density
+        const sub = compProject(L.comp.id); if (!sub || (this.nest || 0) > 3) return;
+        const r = (this.subs || (this.subs = {}))[L.id] || (this.subs[L.id] = new Renderer()); r.nest = (this.nest || 0) + 1;
+        const c = r.out || (r.out = document.createElement('canvas')); r._size(c, Math.max(2, Math.round(sub.w * s)), Math.max(2, Math.round(sub.h * s)));
+        const lt = (t - L.start) * (L.comp.speed || 1) + (L.comp.offset || 0);
+        r.render(sub, sub.loop === false ? Math.min(lt, sub.duration - 1e-3) : ((lt % sub.duration) + sub.duration) % sub.duration, c, { skipMediaSync: true, transparent: !L.comp.bg });
+        (this.gimg || (this.gimg = {}))[L.id] = c;
+      }
       if (L.type === 'group') {
         if (depth > 8) return;
         const gx = canvasAt(depth * 2 + 1);
@@ -416,7 +435,7 @@ export class Renderer {
         ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0); ctx.restore();
         return;
       }
-      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, gimg: L.type === 'group' ? this.gimg?.[L.id] : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
+      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, gimg: L.type === 'group' || L.type === 'comp' ? this.gimg?.[L.id] : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
       const drawTo = (c, tt = t, trr = tr) => {
         c.setTransform(s, 0, 0, s, 0, 0);
         const m = layerMatrix(L, tt, project); c.transform(m.a, m.b, m.c, m.d, m.e, m.f);

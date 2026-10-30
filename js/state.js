@@ -103,6 +103,13 @@ export function makeLayer(p, type, opts = {}) {
       break;
     }
     // group: members carry `group` = its id and use it as their parent; null: an invisible transform to parent layers to
+    case 'comp': { // another project placed as a layer (Element / Project)
+      L = baseLayer(p, 'comp', opts.name || 'Element');
+      L.comp = { id: opts.compId, speed: 1, offset: 0, bg: false };
+      if (opts.w && opts.h) L.props.scale = +Math.min(1, p.w / opts.w, p.h / opts.h).toFixed(3);
+      if (opts.duration) L.end = Math.min(p.duration, opts.duration);
+      break;
+    }
     case 'group': case 'null': {
       L = baseLayer(p, type, opts.name || (type === 'group' ? 'Group' : 'Null') + ' ' + (p.layers.filter(l => l.type === type).length + 1));
       break;
