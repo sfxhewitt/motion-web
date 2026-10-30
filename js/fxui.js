@@ -174,7 +174,7 @@ export function panelFx(L) {
       if (!key) return toast('Add an effect first');
       const k = findKey(L, key, S().t); if (k) removeKey(L, key, k.id); else setKey(L, key, S().t, clone(valueAt(L, key, S().t)));
       X.commit(); } }, icon('key')),
-    h('button', { class: 'ib fx-ebtn', title: 'Easing', 'data-testid': 'fx-ease', onclick: () => { if (!key) return keyframesRequired(); openEaseFor(L, key, 'fx'); } }, icon('graph')),
+    h('button', { class: 'ib fx-ebtn' + ((key && L.keys[key]?.length) > 1 ? '' : ' off'), title: 'Easing', 'data-testid': 'fx-ease', onclick: () => { if (!key) return keyframesRequired(); openEaseFor(L, key, 'fx'); } }, icon('graph')),
   ];
   return { content, left };
 }
@@ -213,7 +213,7 @@ export function pasteFx(L, clip, at = L.effects.length) {
 function paramRow(L, f, k, spec, selected) {
   const key = fxKey(f, k), t = S().t, v = valueAt(L, key, t);
   const anim = hasKeys(L, key), onKey = anim && findKey(L, key, t);
-  const pick = () => { if (S().fxSel?.id === f.id && S().fxSel?.k === k) return; S().fxSel = { id: f.id, k }; X.renderPanel(); };
+  const pick = () => { if (S().fxSel?.id === f.id && S().fxSel?.k === k) return; S().fxSel = { id: f.id, k }; X.renderPanel(); X.renderTimeline(); };
   const label = h('button', { class: 'fxp-l' + (selected ? ' on' : ''), 'data-testid': 'fxp-' + k, onclick: pick }, anim ? h('i', { class: 'fxp-dot' + (onKey ? ' on' : '') }) : null, spec.label);
   const live = nv => { writeProp(L, key, S().t, nv); X.drawFrame(); };
   const done = () => { X.commit({ silent: true }); X.renderTimeline(); if (anim) X.renderPanel(); };
