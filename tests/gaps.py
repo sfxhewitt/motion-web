@@ -257,6 +257,24 @@ with sync_playwright() as pw:
       return { type: L.type, px: [d[0], d[1], d[2]] }; }""")
     check('a project placed as a nested element renders inside this one', r['type'] == 'comp' and r['px'][1] > 200 and r['px'][0] < 50, r)
 
+    # --- 3D layers and the camera ---
+    r = E("""async () => { const R = await import('./js/render.js'), st = await import('./js/state.js');
+      const p = st.newProject('1:1', '3d', { bg: '#000000' }); p.w = p.h = 400;
+      const L = st.makeLayer(p, 'solid'); L.solid.color = '#ffffff'; L.props.scale = 0.5; p.layers = [L];
+      const c = document.createElement('canvas'); c.width = c.height = 400; const r = new R.Renderer();
+      const row = y => { r.render(p, 0, c, { skipMediaSync: true }); const d = c.getContext('2d').getImageData(0, y, 400, 1).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 128) n++; return n; };
+      const flat = [row(110), row(290)];
+      L.is3d = true; L.props.rotX = 50; const tilted = [row(140), row(260)];
+      L.props.rotX = 0; L.props.z = 400; const far = row(200);
+      const cam = st.makeLayer(p, 'camera'); cam.props.zoom = 2; p.layers.push(cam); const zoomed = row(200);
+      return { flat, tilted, far, zoomed }; }""")
+    t = r['tilted']
+    check('3D layer: Rotate X tilts with perspective (near edge wider than far edge)', r['flat'][0] == r['flat'][1] and abs(t[0] - t[1]) > 8, r)
+    check('3D layer: Z pushes it back; camera zoom brings it closer', r['far'] < r['flat'][0] and r['zoomed'] > r['far'], r)
+    E("() => { const A = __app, L = A.project.layers.find(l => l.type === 'shape' && !l.group); A.selectLayer(L.id); A.openSub('layer'); }"); pg.wait_for_timeout(80)
+    pg.click('[data-testid=is3d]'); pg.wait_for_timeout(80)
+    check('Move & Transform has a 3D Layer switch with Z / Rotate X / Rotate Y', pg.locator('[data-testid=prop-rotX]').count() == 1 and pg.locator('[data-testid=prop-z-key]').count() == 1)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

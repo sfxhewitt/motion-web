@@ -13,10 +13,16 @@ export const PROP_META = {
   skew:     { label: 'Skew',    min: -85,   max: 85,   step: 0.5 },
   anchorX:  { label: 'Pivot X', min: -2000, max: 2000, step: 1 },
   anchorY:  { label: 'Pivot Y', min: -2000, max: 2000, step: 1 },
+  z:        { label: 'Z Position', min: -4000, max: 4000, step: 1 },
+  rotX:     { label: 'Rotate X', min: -360, max: 360, step: 0.5 },
+  rotY:     { label: 'Rotate Y', min: -360, max: 360, step: 0.5 },
+  zoom:     { label: 'Zoom',    min: 0.2,   max: 5,    step: 0.01 },
 };
+// 3D layers (L.is3d) add depth and tilt; a camera layer adds dolly (z) and zoom
+export const XFORM3D_PROPS = ['z', 'rotX', 'rotY'];
 // extra transform values (Move & Transform): default when a layer doesn't store them
 export const XFORM_PROPS = ['scaleX', 'scaleY', 'skew', 'anchorX', 'anchorY'];
-const PROP_DEFAULT = { scaleX: 1, scaleY: 1, skew: 0, anchorX: 0, anchorY: 0 };
+const PROP_DEFAULT = { scaleX: 1, scaleY: 1, skew: 0, anchorX: 0, anchorY: 0, z: 0, rotX: 0, rotY: 0, zoom: 1 };
 
 export const ASPECTS = {
   '9:16': [1080, 1920], '16:9': [1920, 1080], '1:1': [1080, 1080], '4:5': [1080, 1350], '4:3': [1440, 1080],
@@ -108,6 +114,10 @@ export function makeLayer(p, type, opts = {}) {
       L.comp = { id: opts.compId, speed: 1, offset: 0, bg: false };
       if (opts.w && opts.h) L.props.scale = +Math.min(1, p.w / opts.w, p.h / opts.h).toFixed(3);
       if (opts.duration) L.end = Math.min(p.duration, opts.duration);
+      break;
+    }
+    case 'camera': { // looks at the composition; moves / tilts the 3D layers (2D layers stay put)
+      L = baseLayer(p, 'camera', 'Camera');
       break;
     }
     case 'group': case 'null': {

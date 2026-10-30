@@ -221,7 +221,7 @@ export function layerBounds(L, project, ctx, t) {
     case 'audio': return { w: 0, h: 0 };
     case 'text': { const m = textLayout(ctx || measureCtx(), t != null ? evalText(L, t, project) : L.text); return { w: m.w, h: m.h }; }
     case 'image': case 'video': return { w: L.media.w, h: L.media.h };
-    case 'null': return { w: 120, h: 120 };
+    case 'null': case 'camera': return { w: 120, h: 120 };
     case 'comp': { const sub = compProject(L.comp.id); return sub ? { w: sub.w, h: sub.h } : { w: 100, h: 100 }; }
     case 'group': { // members' corners in the group's local space (the box stays centred on the group's origin)
       const tt = t ?? lastT, inv = layerMatrix(L, tt, project).inverse(); let mx = 60, my = 60;
@@ -315,6 +315,29 @@ function drawContent(ctx, L, project, ev = {}) {
   }
 }
 
+// ---- 3D layers: each layer is a plane; its 2D composition-space content is tilted (Rotate X / Y about its pivot), pushed
+// back by Z and seen through the camera (or a default one), then drawn as a perspective-warped triangle mesh ----
+export function camera3d(project, t) {
+  const C = project.layers.find(l => l.type === 'camera' && l.visible && t >= l.start && t < l.end), v = p => valueAt(C, p, t);
+  const f = Math.hypot(project.w, project.h) * 1.2 * (C ? v('zoom') : 1);
+  return C ? { x: v('x'), y: v('y'), z: v('z'), roll: v('rotation') * D, f, w: project.w, h: project.h } : { x: project.w / 2, y: project.h / 2, z: 0, roll: 0, f, w: project.w, h: project.h };
+}
+const is3d = L => !!L.is3d && L.type !== 'camera' && L.type !== 'adjust';
+// composition point (x, y) of a 3D layer -> projected composition point, or null behind the camera
+export function project3d(L, t, project, cam = camera3d(project, t)) {
+  const piv = layerMatrix(L, t, project).transformPoint({ x: valueAt(L, 'anchorX', t), y: valueAt(L, 'anchorY', t) });
+  const ax = valueAt(L, 'rotX', t) * D, ay = valueAt(L, 'rotY', t) * D, z0 = valueAt(L, 'z', t);
+  const ca = Math.cos(ax), sa = Math.sin(ax), cb = Math.cos(ay), sb = Math.sin(ay), cr = Math.cos(-cam.roll), sr = Math.sin(-cam.roll);
+  return (x, y) => {
+    let vx = x - piv.x, vy = y - piv.y, vz = 0;
+    [vy, vz] = [vy * ca - vz * sa, vy * sa + vz * ca];   // tilt about X
+    [vx, vz] = [vx * cb + vz * sb, -vx * sb + vz * cb];  // turn about Y
+    let X = piv.x + vx - cam.x, Y = piv.y + vy - cam.y; const Z = vz + z0 - cam.z + cam.f;
+    if (Z < 1) return null;
+    [X, Y] = [X * cr - Y * sr, X * sr + Y * cr];
+    return [cam.w / 2 + X * cam.f / Z, cam.h / 2 + Y * cam.f / Z];
+  };
+}
 // nested projects (Element / Project layers): read from storage at most every 1.5 s
 const compCache = new Map();
 export function compProject(id) {
@@ -340,7 +363,7 @@ export class Renderer {
   }
   // composite a list of layers (top first) onto ctx; a group renders its members into its own canvas first
   _stack(ctx, Ls, t, s, W, H, project, depth) {
-    const live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio' && L.type !== 'null';
+    const live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio' && L.type !== 'null' && L.type !== 'camera';
     const canClip = L => L.type !== 'adjust' && L.type !== 'audio' && L.type !== 'null';
     const pool = this.pool || (this.pool = []);
     const canvasAt = k => { const c = pool[k] || (pool[k] = document.createElement('canvas')); this._size(c, W, H);
@@ -378,6 +401,29 @@ export class Renderer {
       }
       if (!live(L)) continue;
       draw(ctx, L, OPS[L.blend] || 'source-over');
+    }
+  }
+  // draw a full-frame layer canvas onto ctx through its 3D projection (N×N mesh of affine triangles over the layer's box)
+  _warp3d(ctx, src, L, t, s, project) {
+    const P3 = project3d(L, t, project), m = layerMatrix(L, t, project), b = layerBounds(L, project, null, t);
+    const N = 10, hw = b.w / 2 * 1.15, hh = b.h / 2 * 1.15, g = [];
+    for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+      const q = m.transformPoint({ x: -hw + 2 * hw * i / N, y: -hh + 2 * hh * j / N }), d = P3(q.x, q.y);
+      g.push(d ? { sx: q.x * s, sy: q.y * s, dx: d[0] * s, dy: d[1] * s } : null);
+    }
+    const tri = (a, b_, c) => {
+      if (!a || !b_ || !c) return;
+      const den = (b_.sx - a.sx) * (c.sy - a.sy) - (c.sx - a.sx) * (b_.sy - a.sy); if (Math.abs(den) < 1e-9) return;
+      // affine taking source triangle -> destination triangle
+      const A = ((b_.dx - a.dx) * (c.sy - a.sy) - (c.dx - a.dx) * (b_.sy - a.sy)) / den, C_ = ((c.dx - a.dx) * (b_.sx - a.sx) - (b_.dx - a.dx) * (c.sx - a.sx)) / den;
+      const B = ((b_.dy - a.dy) * (c.sy - a.sy) - (c.dy - a.dy) * (b_.sy - a.sy)) / den, D_ = ((c.dy - a.dy) * (b_.sx - a.sx) - (b_.dy - a.dy) * (c.sx - a.sx)) / den;
+      const E = a.dx - A * a.sx - C_ * a.sy, F = a.dy - B * a.sx - D_ * a.sy;
+      const cx = (a.dx + b_.dx + c.dx) / 3, cy = (a.dy + b_.dy + c.dy) / 3, grow = p => [p.dx + (p.dx - cx) * 0.02 + Math.sign(p.dx - cx) * 0.5, p.dy + (p.dy - cy) * 0.02 + Math.sign(p.dy - cy) * 0.5];
+      ctx.save(); ctx.beginPath(); ctx.moveTo(...grow(a)); ctx.lineTo(...grow(b_)); ctx.lineTo(...grow(c)); ctx.closePath(); ctx.clip();
+      ctx.setTransform(A, B, C_, D_, E, F); ctx.drawImage(src, 0, 0); ctx.restore();
+    };
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const k = j * (N + 1) + i; tri(g[k], g[k + 1], g[k + N + 1]); tri(g[k + 1], g[k + N + 2], g[k + N + 1]);
     }
   }
   // track matte: keep src only where the matte layer is (alpha) or bright (luma); invert keeps the rest
@@ -442,7 +488,7 @@ export class Renderer {
         if (L.shadow?.on) { const sh = evalNs(L, 'shadow', tt), n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
         drawContent(c, L, project, evAt(tt));
       };
-      const simple = !useGL && !mb && !echo && !L.matte?.layer && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);
+      const simple = !useGL && !mb && !echo && !L.matte?.layer && !is3d(L) && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);
       if (simple) { ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore(); return; }
       lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.globalAlpha = 1; lctx.globalCompositeOperation = 'source-over'; lctx.clearRect(0, 0, W, H);
       const sample = (tt, alpha, comp = 'source-over') => { // draw the layer at another time into lc
@@ -468,7 +514,8 @@ export class Renderer {
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
       if (L.matte?.layer && depth < 2) src = this._matte(src, L, t, s, W, H, project, depth);
-      ctx.drawImage(src, 0, 0); ctx.restore();
+      if (is3d(L)) this._warp3d(ctx, src, L, t, s, project); else ctx.drawImage(src, 0, 0);
+      ctx.restore();
     } catch (e) { if (this.errors.length < 20) this.errors.push(String(e)); console.error(e); }
   }
 }

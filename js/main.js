@@ -1,4 +1,4 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, copyKeys, pasteKeys, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, XFORM3D_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, copyKeys, pasteKeys, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
@@ -869,7 +869,7 @@ function stripThumb(L) {
   THUMB.cache.set(key, url);
   return url;
 }
-const TYPE_ICON = { comp: 'element', shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
+const TYPE_ICON = { camera: 'camera', comp: 'element', shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
 function renderTimeline() {
   const p = P(); if (!p) return;
   const ox = tlOriginX();
@@ -1360,8 +1360,14 @@ function panelLayer(L) {
       key: { state: propKeyState(L, prop), toggle: () => { const k = findKey(L, prop, S.t); if (k) removeKey(L, prop, k.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } },
     });
   });
-  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows,
-    ...XFORM_PROPS.map(prop => keyNum(L, prop, PROP_META[prop].label, PROP_META[prop].min, PROP_META[prop].max, PROP_META[prop].step, 'prop-' + prop))));
+  const K = prop => keyNum(L, prop, PROP_META[prop].label, PROP_META[prop].min, PROP_META[prop].max, PROP_META[prop].step, 'prop-' + prop);
+  if (L.type === 'camera') { // pan (x / y), dolly (z), roll (rotation) and zoom; it moves every 3D layer
+    out.append(section('Camera  ·  moves 3D layers', K('x'), K('y'), K('z'), K('rotation'), K('zoom')));
+    return out;
+  }
+  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows, ...XFORM_PROPS.map(K)));
+  out.append(section('3D', toggle({ label: '3D Layer', value: !!L.is3d, testid: 'is3d', onChange: v => { if (v) L.is3d = true; else delete L.is3d; commit(); } }),
+    ...(L.is3d ? XFORM3D_PROPS.map(K) : [])));
   out.append(section('Timing',
     slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setStart(L, Math.min(v, L.end - 0.05))), onChange: () => commit() }),
     slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setEnd(L, Math.max(v, L.start + 0.05))), onChange: () => commit() })));
@@ -1682,7 +1688,7 @@ function sheetContent() {
     case 'object': return h('div', { class: 'sh-obj' },
       tile('solid', 'Solid Color', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
       tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
-      tile('camera', 'Camera', soon('Camera'), 'add-camera'),
+      tile('camera', 'Camera', () => { if (P().layers.some(l => l.type === 'camera')) return toast('This project already has a camera'); addLayer(makeLayer(P(), 'camera'), { tab: 'layer' }); toast('Turn on 3D Layer (Move & Transform) for layers the camera should move'); }, 'add-camera'),
       tile('group', 'Empty Group', () => addLayer(makeLayer(P(), 'group')), 'add-group'),
       tile('nullobj', 'Null', () => addLayer(makeLayer(P(), 'null')), 'add-null'),
       tile('element', 'Element / Project', openElements, 'add-element'));
@@ -1717,7 +1723,7 @@ function openSheet(tabId) { S.multi.clear(); if (S.sel) { S.sel = null; S.selKey
 // colour tags shown on the layer's timeline clip (sampled from the reference swatches)
 const TAGS = [null, '#e34829', '#c8495c', '#da8d57', '#faeb90', '#8be1d4', '#5aa9e6', '#7b6cf0', '#b66ee0', '#9a9ca8'];
 const isLight = c => { const n = parseInt(c.slice(1), 16); return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 170; };
-const visualLayer = L => L.type !== 'audio' && L.type !== 'adjust';
+const visualLayer = L => !['audio', 'adjust', 'camera', 'null'].includes(L.type);
 // Fit / Fill / Stretch to the composition: centred, unrotated, scaled relative to the canvas
 function fitLayer(L, how) {
   const p = P(), b = layerBounds(L, p, view.getContext('2d'));
