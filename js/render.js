@@ -21,7 +21,17 @@ export const FONTS = {
   condensed: '"Avenir Next Condensed", "Arial Narrow", "Roboto Condensed", sans-serif',
   impact: 'Impact, "Arial Black", "Helvetica Neue", sans-serif',
   futura: 'Futura, "Century Gothic", "Trebuchet MS", sans-serif',
+  avenir: '"Avenir Next", Avenir, "Segoe UI", sans-serif',
+  gill: '"Gill Sans", "Gill Sans MT", Calibri, sans-serif',
+  optima: 'Optima, Candara, "Segoe UI", sans-serif',
+  didot: 'Didot, "Bodoni 72", "Bodoni MT", Georgia, serif',
+  baskerville: 'Baskerville, "Baskerville Old Face", Georgia, serif',
+  typewriter: '"American Typewriter", "Courier New", Courier, monospace',
+  script: '"Snell Roundhand", "Brush Script MT", "Segoe Script", cursive',
+  marker: '"Marker Felt", "Chalkboard SE", "Comic Neue", fantasy',
 };
+// imported fonts are stored as 'f:<id>' and registered as the FontFace family kf_<id>
+export const fontStack = f => FONTS[f] || (String(f).startsWith('f:') ? `kf_${f.slice(2)}, ${FONTS.system}` : FONTS.system);
 
 export const media = new Map(); // id -> { type, el, url }
 let lastProject = null, lastT = 0;
@@ -190,7 +200,7 @@ function drawStrokes(ctx, L, project, sfx) {
 }
 
 export function textLayout(ctx, tx) {
-  const font = `${tx.italic ? 'italic ' : ''}${tx.weight} ${tx.size}px ${FONTS[tx.font] || FONTS.system}`;
+  const font = `${tx.italic ? 'italic ' : ''}${tx.weight} ${tx.size}px ${fontStack(tx.font)}`;
   ctx.font = font;
   if ('letterSpacing' in ctx) ctx.letterSpacing = (tx.tracking * tx.size) + 'px';
   const lines = String(tx.content).split('\n');

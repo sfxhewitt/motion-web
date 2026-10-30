@@ -92,7 +92,26 @@ function waveCanvas(L, peaks) {
   }
   return c;
 }
+// ---- imported fonts (TTF / OTF / WOFF / WOFF2): kept with the media in IndexedDB, listed in project.fonts ----
+async function registerFont(id, blob) {
+  if (document.fonts && [...document.fonts].some(f => f.family === 'kf_' + id)) return;
+  const face = new FontFace('kf_' + id, await blob.arrayBuffer()); await face.load(); document.fonts.add(face);
+}
+function pickFont(L) {
+  const inp = h('input', { type: 'file', accept: '.ttf,.otf,.woff,.woff2,font/*', 'data-testid': 'font-file' });
+  inp.onchange = () => inp.files[0] && importFont(inp.files[0], L);
+  document.body.append(inp); inp.click(); setTimeout(() => inp.remove(), 60000);
+}
+async function importFont(file, L) {
+  const id = uid(), name = file.name.replace(/\.[^.]+$/, '').slice(0, 32);
+  try { await registerFont(id, file); } catch (e) { return toast('That font file could not be read'); }
+  await store.putMedia(id, file);
+  (P().fonts || (P().fonts = [])).push({ id, name });
+  if (L?.type === 'text') L.text.font = 'f:' + id;
+  commit(); toast('Font added: ' + name);
+}
 async function hydrateMedia(project) {
+  for (const f of project.fonts || []) { try { const b = await store.getMedia(f.id); if (b) await registerFont(f.id, b); } catch (e) { console.warn(e); } }
   let any = false;
   for (const L of project.layers) {
     if ((L.type === 'image' || L.type === 'video' || L.type === 'audio') && !media.has(L.media.id)) {
@@ -1403,7 +1422,8 @@ function panelEdit(L) {
     ta.addEventListener('input', () => { t.content = ta.value; drawFrame(); });
     ta.addEventListener('change', () => { L.name = t.content.split('\n')[0].slice(0, 18) || 'Text'; commit(); });
     out.append(section('Text', ta,
-      select({ label: 'Font', value: t.font, options: Object.keys(FONTS).map(f => [f, f]), onChange: v => { t.font = v; commit(); } }),
+      select({ label: 'Font', value: t.font, testid: 'text-font', options: [...Object.keys(FONTS).map(f => [f, f]), ...(P().fonts || []).map(f => ['f:' + f.id, f.name]), ['+import', 'Import Font…']],
+        onChange: v => { if (v === '+import') { pickFont(L); renderPanel(); } else { t.font = v; commit(); } } }),
       keyNum(L, 'text.size', 'Size', 8, 800, 1, 'text-size'), N('Weight', t, 'weight', 100, 900, 100), keyNum(L, 'text.tracking', 'Tracking', -0.2, 1, 0.01, 'text-tracking'), keyNum(L, 'text.lineHeight', 'Line Ht', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
       toggle({ label: 'Italic', value: t.italic, onChange: v => { t.italic = v; commit(); } })));
@@ -2073,6 +2093,7 @@ function newProjectFlow() { openCreate(); }
 async function exportJSON() {
   const p = clone(P()); p.media = {};
   for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
+  for (const f of p.fonts || []) { const b = await store.getMedia(f.id); if (b) p.media[f.id] = await store.blobToDataURL(b); }
   download(new Blob([JSON.stringify(p)], { type: 'application/json' }), (p.name || 'project').replace(/\W+/g, '_') + '.kntc.json');
 }
 async function importJSON(file) {
@@ -2217,7 +2238,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
+    importFont, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }

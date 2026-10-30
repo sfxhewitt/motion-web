@@ -193,6 +193,18 @@ with sync_playwright() as pw:
     E("() => { __app.selectLayer(__app.project.layers.find(l => l.type === 'shape').id); __app.openSub('blend'); }"); pg.wait_for_timeout(100)
     check('Blending & Opacity has a Mask Layer picker', pg.locator('[data-testid=matte-layer]').count() == 1)
 
+    # --- fonts: more built-in stacks + importing a font file ---
+    font = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+    if os.path.exists(font):
+        E("() => { const A = __app, L = A.makeLayer(A.project, 'text'); A.addLayer(L); A.openSub('edit'); }"); pg.wait_for_timeout(100)
+        opts = E("() => [...document.querySelectorAll('[data-testid=text-font] option')].map(o => o.value)")
+        r = E("""async (b64) => { const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); const f = new File([bin], 'DejaVuSans.ttf', { type: 'font/ttf' });
+          const A = __app, L = A.project.layers[0]; await A.importFont(f, L);
+          return { font: L.text.font, listed: (A.project.fonts || []).length, loaded: [...document.fonts].some(x => x.family === 'kf_' + L.text.font.slice(2) && x.status === 'loaded') }; }""",
+          __import__('base64').b64encode(open(font, 'rb').read()).decode())
+        check('font list has more fonts plus Import Font…', len(opts) >= 15 and '+import' in opts, opts)
+        check('imported font is registered and applied to the text layer', r['font'].startswith('f:') and r['listed'] == 1 and r['loaded'], r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()
