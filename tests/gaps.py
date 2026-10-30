@@ -1,6 +1,6 @@
 """Tests for the Alight gap features (split/trim offsets, style keyframes, anchor, audio, speed, keys clipboard, bezier,
 export formats, groups/parenting, masks). Desktop Chromium; run with the static server on :8765."""
-import os, sys
+import os, sys, wave, struct, math
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get('BASE', 'http://localhost:8765/')
@@ -59,6 +59,24 @@ with sync_playwright() as pw:
     r = E("""async () => { const A = __app, L = A.project.layers.find(l => l.type === 'shape'); A.selectLayer(L.id); A.openSub('layer'); await new Promise(r => setTimeout(r, 50));
       return ['scaleX', 'scaleY', 'skew', 'anchorX', 'anchorY'].every(k => document.querySelector('[data-testid=prop-' + k + ']') && document.querySelector('[data-testid=prop-' + k + '-key]')); }""")
     check('Move & Transform shows keyframeable Scale X/Y, Skew and Pivot', r)
+
+    # --- audio: keyframed volume, fades, waveform on the clip ---
+    r = E("""async () => { const st = await import('./js/state.js'), R = await import('./js/render.js'); const p = st.newProject('1:1');
+      const L = st.makeLayer(p, 'audio', { mediaId: 'a', mediaDuration: 4 }); L.start = 0; L.end = 4; L.media.fadeIn = 1; L.media.fadeOut = 1;
+      const g = [0.5, 2, 3.5].map(t => +R.mediaGain(L, t).toFixed(3));
+      st.setKey(L, 'media.volume', 1, 1, { type: 'linear' }); st.setKey(L, 'media.volume', 3, 0); L.keys['media.volume'][0].ease = { type: 'linear' };
+      return { g, k: +R.mediaGain(L, 2).toFixed(3) }; }""")
+    check('fade in / out ramps and keyframed volume', r == {'g': [0.5, 1, 0.5], 'k': 0.5}, r)
+    wav = '/tmp/kntc-test.wav'
+    with wave.open(wav, 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+        w.writeframes(b''.join(struct.pack('<h', int(9000 * math.sin(2 * math.pi * 440 * i / 8000) * (i / 16000))) for i in range(16000)))
+    E("() => { __app.deselect(); }")
+    pg.set_input_files('#fileAudio', wav)
+    pg.wait_for_function("__app.project.layers[0].type === 'audio'", timeout=8000)
+    pg.wait_for_selector('[data-testid=wave]', timeout=8000)
+    E("() => { __app.selectLayer(__app.project.layers[0].id); __app.openSub('edit'); }"); pg.wait_for_timeout(100)
+    check('audio clip shows a waveform; Edit Audio has ◆ volume and fades', pg.locator('[data-testid=wave]').count() >= 1 and pg.locator('[data-testid=audio-volume-key]').count() == 1 and pg.locator('[data-testid=fade-in]').count() == 1)
 
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])

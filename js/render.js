@@ -382,6 +382,15 @@ export class Renderer {
   }
 }
 
+// Loudness of a video / audio layer at t: keyframeable Volume × Fade In / Fade Out ramps (0..1)
+export function mediaGain(L, t) {
+  const m = L.media, fi = m.fadeIn || 0, fo = m.fadeOut || 0;
+  let g = Math.max(0, valueAt(L, 'media.volume', t));
+  if (fi > 0 && t - L.start < fi) g *= Math.max(0, (t - L.start) / fi);
+  if (fo > 0 && L.end - t < fo) g *= Math.max(0, (L.end - t) / fo);
+  return Math.min(1, g);
+}
+
 // Keep <video> elements in step with the timeline.
 export function syncVideos(project, t, playing) {
   // Clips split from one source share its media element: the clip under the playhead drives it.
@@ -397,7 +406,10 @@ export function syncVideos(project, t, playing) {
     const local = Math.max(0, t - L.start + (L.media.offset || 0));
     if (!active) { if (!v.paused) v.pause(); continue; }
     if (v.duration && local > v.duration) { if (!v.paused) v.pause(); continue; }
+    const g = mediaGain(L, t);
+    if (m.gain) { m.gain.gain.value = g; v.volume = 1; } else v.volume = g; // after an export the element plays through its gain node
     if (playing) {
+      if (L.type === 'video') v.muted = g === 0;
       if (Math.abs(v.currentTime - local) > 0.3) v.currentTime = local;
       if (v.paused) v.play().catch(() => {});
     } else {

@@ -2,7 +2,7 @@ import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, mediaGain, shapePoints, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
@@ -67,7 +67,30 @@ async function registerMedia(id, blob, type) {
     el.addEventListener('seeked', () => { if (!S.playing) drawFrame(); });
   }
   media.set(id, { type, el, url });
+  if (type !== 'image') computePeaks(id, blob);
   return el;
+}
+// waveform peaks (max |sample| per 1/100 s, first channel) for audio and video clips; no sound track -> none
+async function computePeaks(id, blob) {
+  try {
+    const ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 2, 44100);
+    const buf = await ac.decodeAudioData(await blob.arrayBuffer()), d = buf.getChannelData(0);
+    const per = Math.max(1, Math.floor(buf.sampleRate / 100)), n = Math.ceil(d.length / per), pk = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let m = 0; for (let j = i * per, e = Math.min(d.length, j + per); j < e; j++) { const a = Math.abs(d[j]); if (a > m) m = a; } pk[i] = m; }
+    const e = media.get(id); if (!e) return;
+    e.peaks = pk; renderTimeline();
+  } catch { /* no decodable audio */ }
+}
+// the clip's slice of the source waveform, scaled by the volume / fades
+function waveCanvas(L, peaks) {
+  const w = Math.max(4, Math.min(4096, Math.round((L.end - L.start) * S.pps))), H = 26, c = h('canvas', { class: 'wave', width: w, height: H, 'data-testid': 'wave' });
+  const g = c.getContext('2d'); g.fillStyle = 'rgba(255,255,255,.55)';
+  for (let x = 0; x < w; x++) {
+    const t = L.start + x / S.pps, i = Math.floor((t - L.start + (L.media.offset || 0)) * 100);
+    const a = (peaks[i] || 0) * mediaGain(L, t) * (H - 2);
+    if (a > 0.3) g.fillRect(x, (H - a) / 2, 1, a);
+  }
+  return c;
 }
 async function hydrateMedia(project) {
   let any = false;
@@ -763,6 +786,8 @@ function renderTimeline() {
     const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (msel ? ' msel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : '') + (L.tag ? ' tagged' + (isLight(L.tag) ? ' lt' : '') : ''),
       'data-tag': L.tag || null, style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip, ...tag } },
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
+    const pk = L.media && media.get(L.media.id)?.peaks;
+    if (pk && (L.type === 'audio' || L.type === 'video')) clip.prepend(waveCanvas(L, pk));
     bindClip(clip, L);
     track.append(clip);
     // merged keyframe diamonds (one per time); in Effects, only the selected parameter's diamonds are lit
@@ -1138,7 +1163,7 @@ function tileGrid(L) {
     h('div', { class: 'trow small' },
       T('speed', 'speed', '', soon('Speed'), 'sm corner'),
       h('div', { class: 'tgroup' }, T('trim-start', 'splitl', '', () => splitAt(L, 'start'), 'sm'), T('split', 'split', '', () => splitAt(L, 'split'), 'sm'), T('trim-end', 'splitr', '', () => splitAt(L, 'end'), 'sm')),
-      T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
+      T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); delete L.keys['media.volume']; L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
     h('div', { class: 'trow three' },
       T('style', 'fill', 'Color & Fill', visual ? open('style') : soon(), visual ? '' : 'off'),
       T('border', 'border', 'Border & Shadow', drawable ? open('border') : soon(), drawable ? '' : 'off'),
@@ -1255,6 +1280,11 @@ function rulerSlider({ label, value, min, max, step = 10, onInput, onChange, rig
   requestAnimationFrame(draw);
   return row;
 }
+// Volume (keyframeable) + Fade In / Fade Out for audio and video layers
+function soundFields(L) {
+  const { N } = fieldMakers(L), m = L.media, max = Math.max(0.1, L.end - L.start);
+  return [keyNum(L, 'media.volume', 'Volume', 0, 1, 0.01, 'audio-volume'), N('Fade In s', m, 'fadeIn', 0, max, 0.05, 'fade-in'), N('Fade Out s', m, 'fadeOut', 0, max, 0.05, 'fade-out')];
+}
 function panelEdit(L) {
   const out = h('div', {}), { N } = fieldMakers(L);
   const big = Math.max(P().w, P().h) * 1.5;
@@ -1299,11 +1329,11 @@ function panelEdit(L) {
       h('div', { class: 'acts' },
         h('button', { class: 'act', onclick: () => { writeProp(L, 'scale', S.t, +Math.min(P().w / m.w, P().h / m.h).toFixed(3)); commit(); } }, 'Fit'),
         h('button', { class: 'act', onclick: () => { writeProp(L, 'scale', S.t, +Math.max(P().w / m.w, P().h / m.h).toFixed(3)); commit(); } }, 'Fill')),
-      L.type === 'video' ? N('Volume', m, 'volume', 0, 1, 0.01) : null,
+      ...(L.type === 'video' ? soundFields(L) : []),
       L.type === 'video' ? N('Offset s', m, 'offset', 0, 600, 0.05) : null));
   } else if (L.type === 'audio') {
     const m = L.media;
-    out.append(section('Audio', h('div', { class: 'hint' }, m.duration ? `Source ${tc(m.duration)}` : ''), N('Volume', m, 'volume', 0, 1, 0.01, 'audio-volume'), N('Offset s', m, 'offset', 0, 600, 0.05)));
+    out.append(section('Audio', h('div', { class: 'hint' }, m.duration ? `Source ${tc(m.duration)}` : ''), ...soundFields(L), N('Offset s', m, 'offset', 0, 600, 0.05)));
   }
   return out;
 }
