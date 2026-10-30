@@ -210,6 +210,15 @@ export function layerBounds(L, project, ctx, t) {
     case 'audio': return { w: 0, h: 0 };
     case 'text': { const m = textLayout(ctx || measureCtx(), t != null ? evalText(L, t, project) : L.text); return { w: m.w, h: m.h }; }
     case 'image': case 'video': return { w: L.media.w, h: L.media.h };
+    case 'null': return { w: 120, h: 120 };
+    case 'group': { // members' corners in the group's local space (the box stays centred on the group's origin)
+      const tt = t ?? lastT, inv = layerMatrix(L, tt, project).inverse(); let mx = 60, my = 60;
+      for (const m of project.layers) if (m.group === L.id && m.type !== 'audio' && m.type !== 'group') {
+        const b = layerBounds(m, project, ctx, tt), mm = inv.multiply(layerMatrix(m, tt, project));
+        for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const q = mm.transformPoint({ x: x * b.w / 2, y: y * b.h / 2 }); mx = Math.max(mx, Math.abs(q.x)); my = Math.max(my, Math.abs(q.y)); }
+      }
+      return { w: Math.min(mx * 2, project.w * 4), h: Math.min(my * 2, project.h * 4) };
+    }
     default: return { w: project.w, h: project.h };
   }
 }
@@ -222,6 +231,10 @@ function shapePerimeter(s) {
 // ev: { shape, tx, sfx } = evaluated (keyframed / effect-modified) content for this frame
 function drawContent(ctx, L, project, ev = {}) {
   switch (L.type) {
+    case 'group': { // members were rendered in composition space (they inherit the group's transform as their parent)
+      if (!ev.gimg) break;
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(ev.gimg, 0, 0); ctx.restore(); break;
+    }
     case 'solid': {
       const s = ev.solid || L.solid;
       ctx.fillStyle = s.gradient ? gradient(ctx, project.w, project.h, s.color, s.fill2, s.gradAngle) : s.color;
@@ -302,8 +315,24 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     if (transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = project.bg; ctx.fillRect(0, 0, W, H); }
     this._size(this.layerCanvas, W, H);
-    const Ls = project.layers, live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio';
-    const canClip = L => L.type !== 'adjust' && L.type !== 'audio';
+    this._stack(ctx, project.layers.filter(L => !L.group), t, s, W, H, project, 0);
+  }
+  // composite a list of layers (top first) onto ctx; a group renders its members into its own canvas first
+  _stack(ctx, Ls, t, s, W, H, project, depth) {
+    const live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio' && L.type !== 'null';
+    const canClip = L => L.type !== 'adjust' && L.type !== 'audio' && L.type !== 'null';
+    const pool = this.pool || (this.pool = []);
+    const canvasAt = k => { const c = pool[k] || (pool[k] = document.createElement('canvas')); this._size(c, W, H);
+      const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H); return x; };
+    const draw = (x, L, op) => {
+      if (L.type === 'group') {
+        if (depth > 8) return;
+        const gx = canvasAt(depth * 2 + 1);
+        this._stack(gx, project.layers.filter(m => m.group === L.id), t, s, W, H, project, depth + 1);
+        (this.gimg || (this.gimg = {}))[L.id] = gx.canvas;
+      }
+      this._layer(x, L, t, s, W, H, op, project);
+    };
     for (let i = Ls.length - 1; i >= 0; i--) {
       const L = Ls[i];
       // clipping mask: the run of `clip` layers directly above L is drawn only where L is (L masks them)
@@ -312,15 +341,14 @@ export class Renderer {
       if (clipped.length) {
         i -= clipped.length;
         if (!live(L)) continue; // hidden / inactive mask -> nothing of the group shows
-        const g = this.group || (this.group = document.createElement('canvas')); this._size(g, W, H);
-        const gctx = g.getContext('2d'); gctx.setTransform(1, 0, 0, 1, 0, 0); gctx.globalCompositeOperation = 'source-over'; gctx.clearRect(0, 0, W, H);
-        this._layer(gctx, L, t, s, W, H, 'source-over', project);
-        for (const C of clipped) if (live(C)) this._layer(gctx, C, t, s, W, H, 'source-atop', project);
-        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = OPS[L.blend] || 'source-over'; ctx.drawImage(g, 0, 0); ctx.restore();
+        const gctx = canvasAt(depth * 2);
+        draw(gctx, L, 'source-over');
+        for (const C of clipped) if (live(C)) draw(gctx, C, 'source-atop');
+        ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = OPS[L.blend] || 'source-over'; ctx.drawImage(gctx.canvas, 0, 0); ctx.restore();
         continue;
       }
       if (!live(L)) continue;
-      this._layer(ctx, L, t, s, W, H, OPS[L.blend] || 'source-over', project);
+      draw(ctx, L, OPS[L.blend] || 'source-over');
     }
   }
   // render one layer by itself (no blend) into a pooled canvas: texture source for Displacement Map, Bump Map etc.
@@ -361,7 +389,7 @@ export class Renderer {
         ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0); ctx.restore();
         return;
       }
-      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
+      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, gimg: L.type === 'group' ? this.gimg?.[L.id] : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
       const drawTo = (c, tt = t, trr = tr) => {
         c.setTransform(s, 0, 0, s, 0, 0);
         const m = layerMatrix(L, tt, project); c.transform(m.a, m.b, m.c, m.d, m.e, m.f);

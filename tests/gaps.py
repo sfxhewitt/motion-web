@@ -152,6 +152,32 @@ with sync_playwright() as pw:
       new R.Renderer().render({ ...__app.project, layers: [] }, 0, c, { transparent: true }); return c.getContext('2d').getImageData(5, 5, 1, 1).data[3]; }""")
     check('transparent render leaves the background clear', r == 0, r)
 
+    # --- parenting, null objects, groups ---
+    r = E("""async () => { const A = __app, p = A.project; p.duration = 4;
+      const par = A.makeLayer(p, 'null'); par.props.x = 300; par.props.y = 300; A.addLayer(par);
+      const kid = A.makeLayer(p, 'shape'); kid.props.x = 400; kid.props.y = 300; A.addLayer(kid);
+      const w0 = A.layerMatrix(kid, 0, p).transformPoint({ x: 0, y: 0 });
+      A.seek(0); A.reparent(kid, par.id);
+      const w1 = A.layerMatrix(kid, 0, p).transformPoint({ x: 0, y: 0 });
+      par.props.rotation = 90; const w2 = A.layerMatrix(kid, 0, p).transformPoint({ x: 0, y: 0 }); par.props.rotation = 0;
+      A.reparent(kid, null); const w3 = A.layerMatrix(kid, 0, p).transformPoint({ x: 0, y: 0 });
+      const r = v => [Math.round(v.x), Math.round(v.y)];
+      return { w0: r(w0), w1: r(w1), w2: r(w2), w3: r(w3), parent: kid.parent || null }; }""")
+    check('parenting keeps the layer in place and makes it follow its parent', r == {'w0': [400, 300], 'w1': [400, 300], 'w2': [300, 400], 'w3': [400, 300], 'parent': None}, r)
+    r = E("""async () => { const A = __app, p = A.project;
+      const a = A.makeLayer(p, 'shape'), b = A.makeLayer(p, 'shape'); a.props.x = 200; b.props.x = 600; a.props.y = b.props.y = 500; A.addLayer(b); A.addLayer(a);
+      A.groupLayers([a, b]); const g = p.layers.find(l => l.id === A.S.sel);
+      const ok1 = g.type === 'group' && a.group === g.id && b.group === g.id && p.layers.indexOf(a) === p.layers.indexOf(g) + 1;
+      // render: the group draws its members; hiding the group hides them
+      const c = document.createElement('canvas'); c.width = p.w / 4; c.height = p.h / 4; const R = A.renderer;
+      const px = () => { R.render(p, 0, c, { skipMediaSync: true }); return Array.from(c.getContext('2d').getImageData(Math.round(200 / 4), Math.round(500 / 4), 1, 1).data).slice(0, 3).join(); };
+      const shown = px(); g.visible = false; const hidden = px(); g.visible = true;
+      g.props.opacity = 0; const faded = px(); g.props.opacity = 1;
+      A.duplicateLayer(g); const groups = p.layers.filter(l => l.type === 'group').length, copies = p.layers.filter(l => l.group && l.group !== g.id).length;
+      A.selectLayer(g.id); A.ungroup(g); const freed = !a.group && !a.parent && Math.round(A.layerMatrix(a, 0, p).e) === 200;
+      return { ok1, changed: shown !== hidden, faded: faded === hidden, groups, copies, freed }; }""")
+    check('groups render their members, honour visibility / opacity, duplicate and ungroup', r == {'ok1': True, 'changed': True, 'faded': True, 'groups': 2, 'copies': 2, 'freed': True}, r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

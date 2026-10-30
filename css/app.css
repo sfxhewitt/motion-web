@@ -730,3 +730,9 @@ body[data-mode=none] .m-kf { display: none; }
 .ez-grp { flex: 0 0 48px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 2px; }
 .ez-g { width: 40px; height: 44px; border-radius: 6px; color: #c9cbd6; display: inline-flex; align-items: center; justify-content: center; }
 .ez-g .ico { width: 26px; height: 26px; } .ez-g.on { background: #1f2232; color: var(--ac); }
+
+/* groups: member rows get a mint edge (one more step per nesting level); the group pill's thumbnail is a fold caret */
+.tl-label.ingroup { box-shadow: inset calc(var(--dep) * 3px) 0 0 var(--ac); }
+.tl-label .fold { width: 22px; height: 22px; padding: 0; background: none; border: 0; color: #fff; transform: rotate(-90deg); transition: transform .15s; display: grid; place-items: center; }
+.tl-label .fold.shut { transform: rotate(180deg); }
+.tl-label .fold svg { width: 14px; height: 14px; }

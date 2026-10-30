@@ -160,12 +160,60 @@ function openSub(id) {
 }
 function duplicateLayer(L) {
   if (!L) return toast('Select a layer to duplicate');
-  const ix = P().layers.indexOf(L);
+  const ls = P().layers, ix = ls.indexOf(L);
   const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
-  P().layers.splice(ix, 0, c); S.sel = c.id; commit();
+  // a group copies its members too, re-pointed at the new group
+  const kids = L.type === 'group' ? ls.filter(m => m.group === L.id).map(m => { const k = clone(m); k.id = uid(); k.group = c.id; if (k.parent === L.id) k.parent = c.id;
+    for (const p in k.keys) k.keys[p].forEach(q => (q.id = uid())); renewFxIds(k); return k; }) : [];
+  ls.splice(ix, 0, c, ...kids); S.sel = c.id; commit();
 }
 function deleteLayer(L) {
-  if (!L) return; P().layers.splice(P().layers.indexOf(L), 1); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+  if (!L) return;
+  const ls = P().layers, gone = new Set([L.id, ...descendants(L).filter(m => m.group).map(m => m.id)]);
+  for (const m of ls) if (!gone.has(m.id) && gone.has(m.parent)) reparent(m, null); // children keep their place on screen
+  P().layers = ls.filter(m => !gone.has(m.id)); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+}
+// ---- parenting & groups ----
+const layerById = id => id ? P().layers.find(l => l.id === id) : null;
+// every layer whose parent / group chain leads to L
+function descendants(L) {
+  const out = [], walk = id => { for (const m of P().layers) if ((m.parent === id || m.group === id) && !out.includes(m)) { out.push(m); walk(m.id); } };
+  walk(L.id); return out;
+}
+// change a layer's parent without moving it on screen (at the playhead): its position / rotation / scale (and their keys)
+// are re-expressed in the new parent's space
+function reparent(L, pid) {
+  const mOf = id => { const q = layerById(id); return q ? layerMatrix(q, S.t, P(), false) : new DOMMatrix(); };
+  const Q = mOf(pid).inverse().multiply(mOf(L.parent)), ang = Math.atan2(Q.b, Q.a) * 180 / Math.PI, sc = Math.hypot(Q.a, Q.b) || 1;
+  const xAt = t => valueAt(L, 'x', t), yAt = t => valueAt(L, 'y', t);
+  const pos = t => { const q = Q.transformPoint({ x: xAt(t), y: yAt(t) }); return [+q.x.toFixed(2), +q.y.toFixed(2)]; };
+  const nx = (L.keys.x || []).map(k => pos(k.t)[0]), ny = (L.keys.y || []).map(k => pos(k.t)[1]), base = pos(S.t);
+  (L.keys.x || []).forEach((k, i) => (k.v = nx[i])); (L.keys.y || []).forEach((k, i) => (k.v = ny[i]));
+  if (!hasKeys(L, 'x')) L.props.x = base[0]; if (!hasKeys(L, 'y')) L.props.y = base[1];
+  if (hasKeys(L, 'rotation')) L.keys.rotation.forEach(k => (k.v = +(k.v + ang).toFixed(2))); else L.props.rotation = +(L.props.rotation + ang).toFixed(2);
+  if (hasKeys(L, 'scale')) L.keys.scale.forEach(k => (k.v = +(k.v * sc).toFixed(4))); else L.props.scale = +(L.props.scale * sc).toFixed(4);
+  if (pid) L.parent = pid; else delete L.parent;
+}
+function canParent(L, P_) { return P_ && P_ !== L && P_.type !== 'audio' && !descendants(L).includes(P_); }
+function pickParent(L) {
+  const opts = P().layers.filter(o => canParent(L, o));
+  if (!opts.length) return toast('No layer to parent to');
+  openDialog('Parent to Layer', h('div', { class: 'plist', 'data-testid': 'parent-list' }, ...opts.map(o =>
+    h('button', { class: 'act wide', 'data-testid': 'parent-' + o.id, onclick: () => { reparent(L, o.id); dlg.close(); commit(); toast(`${L.name} follows ${o.name}`); } }, icon(TYPE_ICON[o.type] || 'layer'), o.name))));
+}
+// group the given layers (top first): a new group sits where the topmost was, members follow right below it
+function groupLayers(list) {
+  const ls = P().layers; list = ls.filter(l => list.includes(l) && l.type !== 'group' && !l.group);
+  if (!list.length) return toast('Select layers to group');
+  const g = makeLayer(P(), 'group'); g.start = Math.min(...list.map(l => l.start)); g.end = Math.max(...list.map(l => l.end));
+  const at = ls.indexOf(list[0]);
+  P().layers = ls.filter(l => !list.includes(l)); P().layers.splice(Math.min(at, P().layers.length), 0, g, ...list);
+  for (const m of list) { if (!m.parent) reparent(m, g.id); m.group = g.id; }
+  S.sel = g.id; S.multi.clear(); commit(); toast(`Grouped ${list.length} layer${list.length > 1 ? 's' : ''}`);
+}
+function ungroup(g) {
+  for (const m of P().layers) if (m.group === g.id) { delete m.group; if (m.parent === g.id) reparent(m, null); }
+  P().layers = P().layers.filter(l => l !== g); S.sel = null; commit(); toast('Ungrouped');
 }
 function moveLayer(L, d) {
   const ls = P().layers, ix = ls.indexOf(L), j = ix + d; if (j < 0 || j >= ls.length) return;
@@ -768,7 +816,7 @@ function stripThumb(L) {
   THUMB.cache.set(key, url);
   return url;
 }
-const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio' };
+const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
 function renderTimeline() {
   const p = P(); if (!p) return;
   const ox = tlOriginX();
@@ -787,11 +835,18 @@ function renderTimeline() {
   bindEnd(endH); ruler.append(endH);
   inner.append(h('div', { class: 'tl-head' }, ruler));
   bindScrub(ruler);
+  const depthOf = L => { let d = 0, g = L.group; while (g && d < 8) { d++; g = p.layers.find(l => l.id === g)?.group; } return d; };
+  const folded = L => { let g = L.group, n = 0; while (g && n++ < 8) { const G = p.layers.find(l => l.id === g); if (!G) return false; if (G.collapsed) return true; g = G.group; } return false; };
   for (const L of p.layers) {
-    const sel = L.id === S.sel, msel = S.multi.has(L.id), th = pillThumb(L), isMedia = L.type === 'image' || L.type === 'video';
-    const label = h('div', { class: 'tl-label', onclick: () => selectLayer(L.id) },
+    if (folded(L)) continue;
+    const sel = L.id === S.sel, msel = S.multi.has(L.id), th = pillThumb(L), isMedia = L.type === 'image' || L.type === 'video', dep = depthOf(L);
+    // shift / ⌘ click adds a layer to the multi-selection (Group, Duplicate, Copy act on all of them)
+    const label = h('div', { class: 'tl-label' + (dep ? ' ingroup' : ''), style: dep ? { '--dep': dep } : {}, onclick: ev => {
+        if ((ev.shiftKey || ev.metaKey) && S.sel) { if (!S.multi.size) S.multi.add(S.sel); S.multi.has(L.id) ? S.multi.delete(L.id) : S.multi.add(L.id); renderTimeline(); return; }
+        selectLayer(L.id); } },
       h('button', { class: 'vis' + (L.visible ? '' : ' off'), title: 'Visibility', 'data-testid': 'vis', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
-      th ? h('img', { class: 'th' + (isMedia ? ' m' : ''), src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
+      L.type === 'group' ? h('button', { class: 'fold' + (L.collapsed ? ' shut' : ''), title: L.collapsed ? 'Expand group' : 'Collapse group', 'data-testid': 'fold', onclick: ev => { ev.stopPropagation(); L.collapsed = !L.collapsed; commit(); } }, icon('chevl'))
+        : th ? h('img', { class: 'th' + (isMedia ? ' m' : ''), src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
     const track = h('div', { class: 'tl-track' });
     const st = isMedia ? stripThumb(L) : null, strip = st ? { backgroundImage: `url(${st})` } : {};
     const tag = L.tag ? { '--tag': L.tag } : {};
@@ -1524,8 +1579,8 @@ function sheetContent() {
       tile('solid', 'Solid Color', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
       tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
       tile('camera', 'Camera', soon('Camera'), 'add-camera'),
-      tile('group', 'Empty Group', soon('Groups'), 'add-group'),
-      tile('nullobj', 'Null', soon('Null objects'), 'add-null'),
+      tile('group', 'Empty Group', () => addLayer(makeLayer(P(), 'group')), 'add-group'),
+      tile('nullobj', 'Null', () => addLayer(makeLayer(P(), 'null')), 'add-null'),
       tile('element', 'Element / Project', soon('Elements'), 'add-element'));
     case 'template': return h('div', { class: 'sh-tpl' },
       tile('grid', 'View All', soon('Templates'), 'tpl-all'),
@@ -1604,6 +1659,10 @@ function openLayerMenu() {
     hr(),
     it(L.clip ? 'Release Clipping Mask' : 'Create Clipping Mask', 'clip', () => toggleClip(L), L.clip || clipOk ? '' : 'Needs a visual layer below this one'),
     it('Convert to Outline', 'outline', () => convertToOutline(L), L.type === 'shape' ? '' : 'Convert to Outline works on shapes'),
+    hr(),
+    L.parent && !L.group ? it('Release Parent (' + (layerById(L.parent)?.name || '?') + ')', 'unparent', () => { reparent(L, null); commit(); }) : it('Parent to Layer…', 'parent', () => pickParent(L), L.group ? 'Layers in a group follow the group' : ''),
+    L.type === 'group' ? it('Ungroup', 'ungroup', () => ungroup(L)) : it(S.multi.size > 1 ? `Group ${S.multi.size} Layers` : 'Group Layer', 'group', () => groupLayers(S.multi.size > 1 ? P().layers.filter(l => S.multi.has(l.id)) : [L]), L.group ? 'Already in a group' : ''),
+    L.group ? it('Remove from Group', 'leave-group', () => { const g = L.group; delete L.group; if (L.parent === g) reparent(L, null); commit(); }) : null,
     hr(), tags, hr(),
     it('Center on Canvas', 'center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
     it(L.visible ? 'Hide Layer' : 'Show Layer', 'hide', () => { L.visible = !L.visible; commit(); }),
@@ -2151,7 +2210,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom,
+    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }

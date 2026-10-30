@@ -102,6 +102,11 @@ export function makeLayer(p, type, opts = {}) {
       L = baseLayer(p, 'adjust', 'Adjustment');
       break;
     }
+    // group: members carry `group` = its id and use it as their parent; null: an invisible transform to parent layers to
+    case 'group': case 'null': {
+      L = baseLayer(p, type, opts.name || (type === 'group' ? 'Group' : 'Null') + ' ' + (p.layers.filter(l => l.type === type).length + 1));
+      break;
+    }
     case 'image': case 'video': {
       L = baseLayer(p, type, opts.name || (type === 'image' ? 'Image' : 'Video'));
       L.media = { id: opts.mediaId, w: opts.w || p.w, h: opts.h || p.h, volume: 1, offset: 0 };
