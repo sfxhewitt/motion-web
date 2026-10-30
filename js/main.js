@@ -1,8 +1,8 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
@@ -278,15 +278,21 @@ function drawFrame() {
   easeTick();
 }
 
+// composition coords -> the space a layer's x / y live in (its parent's local space, or the composition)
+function parentInverse(L) {
+  const par = L.parent && P().layers.find(l => l.id === L.parent);
+  return par ? layerMatrix(par, S.t, P(), false).inverse() : new DOMMatrix();
+}
+// where the layer's pivot sits on the stage (rotation / pinch centre)
+function pivotWorld(L) { return toWorld(L, valueAt(L, 'anchorX', S.t), valueAt(L, 'anchorY', S.t)); }
 function toLocal(L, px, py) {
-  const tr = evalTransform(L, S.t), a = -tr.rotation * Math.PI / 180, dx = px - tr.x, dy = py - tr.y, s = tr.scale || 1e-6;
-  return [(dx * Math.cos(a) - dy * Math.sin(a)) / s * (L.flipX ? -1 : 1), (dx * Math.sin(a) + dy * Math.cos(a)) / s * (L.flipY ? -1 : 1)];
+  const q = layerMatrix(L, S.t, P()).inverse().transformPoint({ x: px, y: py });
+  return [q.x, q.y];
 }
 // local (content) -> stage coords; flip=false for the selection box/handles (symmetric, so the knob stays on top)
 function toWorld(L, lx, ly, flip = true) {
-  const tr = evalTransform(L, S.t), a = tr.rotation * Math.PI / 180;
-  if (flip) { if (L.flipX) lx = -lx; if (L.flipY) ly = -ly; }
-  return [tr.x + (lx * Math.cos(a) - ly * Math.sin(a)) * tr.scale, tr.y + (lx * Math.sin(a) + ly * Math.cos(a)) * tr.scale];
+  const q = layerMatrix(L, S.t, P(), flip).transformPoint({ x: lx, y: ly });
+  return [q.x, q.y];
 }
 function layerCorners(L) {
   const tr = evalTransform(L, S.t), b = layerBounds(L, P(), view.getContext('2d'));
@@ -346,12 +352,13 @@ function drawGuides(ctx, k, dpr) {
 // world-space AABB of a layer (optionally with its centre moved to cx, cy)
 function layerAABB(L) {
   const g = layerCorners(L), xs = g.corners.map(q => q[0]), ys = g.corners.map(q => q[1]);
-  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys), cx: g.tr.x, cy: g.tr.y };
+  const c = pivotWorld(L);
+  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys), cx: c[0], cy: c[1] };
 }
 // magnetic snapping: returns the snapped centre and the guides to draw
 function snapMove(L, nx, ny) {
   const p = P(), box = layerAABB(L), thr = 8 / viewScale;
-  const offX = [box.l - box.cx, 0, box.r - box.cx], offY = [box.t - box.cy, 0, box.b - box.cy];
+  const offX = [box.l - box.cx, (box.l + box.r) / 2 - box.cx, box.r - box.cx], offY = [box.t - box.cy, (box.t + box.b) / 2 - box.cy, box.b - box.cy];
   const tx = [0, p.w / 2, p.w], ty = [0, p.h / 2, p.h];
   for (const o of p.layers) {
     if (o === L || !o.visible || !visualLayer(o) || o.type === 'solid' || S.t < o.start || S.t >= o.end) continue;
@@ -373,14 +380,14 @@ function dimsOf(L) {
   return null; // text / solid / drawing: one uniform scale
 }
 function startHandle(L, hi, px, py) {
-  const g = layerCorners(L), tr = g.tr, d = dimsOf(L), [w0, h0] = d ? d.get() : [g.b.w, g.b.h];
-  return { mode: 'handle', L, hi, sx: HANDLES[hi][0], sy: HANDLES[hi][1], x0: tr.x, y0: tr.y, s0: valueAt(L, 'scale', S.t), rot: tr.rotation * Math.PI / 180, w0, h0, dims: d, bw: g.b.w, bh: g.b.h,
-    p0: handleLocal(tr.x, tr.y, tr.rotation * Math.PI / 180, valueAt(L, 'scale', S.t), px, py), moved: false };
+  const g = layerCorners(L), tr = g.tr, d = dimsOf(L), [w0, h0] = d ? d.get() : [g.b.w, g.b.h], m0 = layerMatrix(L, S.t, P(), false), inv = m0.inverse();
+  return { mode: 'handle', L, hi, sx: HANDLES[hi][0], sy: HANDLES[hi][1], x0: tr.x, y0: tr.y, s0: valueAt(L, 'scale', S.t), m0, inv, w0, h0, dims: d, bw: g.b.w, bh: g.b.h,
+    p0: handleLocal(inv, px, py), moved: false };
 }
 // pointer -> local units of the box at the start of the drag (unflipped, unscaled content units)
-function handleLocal(x0, y0, rot, s, px, py) { const dx = px - x0, dy = py - y0, c = Math.cos(-rot), sn = Math.sin(-rot); return [(dx * c - dy * sn) / s, (dx * sn + dy * c) / s]; }
+function handleLocal(inv, px, py) { const q = inv.transformPoint({ x: px, y: py }); return [q.x, q.y]; }
 function moveHandle(g, px, py) {
-  const { L, sx, sy, s0, rot } = g, [lx, ly] = handleLocal(g.x0, g.y0, rot, s0, px, py), mode = S.sizeMode;
+  const { L, sx, sy, s0 } = g, [lx, ly] = handleLocal(g.inv, px, py), mode = S.sizeMode;
   const fromEdge = mode !== 'center', corner = sx && sy, hw = g.bw / 2, hh = g.bh / 2;
   // anchor (local): the centre, or the opposite corner / edge
   const ax = fromEdge ? -sx * hw : 0, ay = fromEdge ? -sy * hh : 0;
@@ -400,8 +407,11 @@ function moveHandle(g, px, py) {
     if (g.dims) g.dims.set(g.w0, g.h0);
     writeProp(L, 'scale', S.t, +Math.max(0.01, s0 * fx).toFixed(4)); cxl = ax * (1 - fx); cyl = ay * (1 - fy);
   }
-  const c = Math.cos(rot), sn = Math.sin(rot), wx = (cxl * c - cyl * sn) * s0, wy = (cxl * sn + cyl * c) * s0;
-  writeProp(L, 'x', S.t, +(g.x0 + wx).toFixed(2)); writeProp(L, 'y', S.t, +(g.y0 + wy).toFixed(2));
+  // move the layer so the box centre lands where it should (works with any pivot, skew or parent)
+  writeProp(L, 'x', S.t, g.x0); writeProp(L, 'y', S.t, g.y0);
+  const want = g.m0.transformPoint({ x: cxl, y: cyl }), cur = layerMatrix(L, S.t, P(), false).transformPoint({ x: 0, y: 0 });
+  const toPar = parentInverse(L), a = toPar.transformPoint(want), b = toPar.transformPoint(cur); // x / y live in the parent's space
+  writeProp(L, 'x', S.t, +(g.x0 + a.x - b.x).toFixed(2)); writeProp(L, 'y', S.t, +(g.y0 + a.y - b.y).toFixed(2));
   g.moved = true;
 }
 function setSizeMode(m) {
@@ -478,7 +488,7 @@ stage.addEventListener('pointerdown', e => {
   if (ptrs.size > 1) { if (gesture?.mode === 'tap') gesture = null; return; }
   if (L && L.type !== 'adjust' && L.type !== 'audio' && S.t >= L.start && S.t < L.end) {
     const g = layerCorners(L), tol = 22 / viewScale;
-    if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: Math.atan2(py - g.tr.y, px - g.tr.x) }; return; }
+    if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: (c => Math.atan2(py - c[1], px - c[0]))(pivotWorld(L)) }; return; }
     const hs = [...g.corners, ...g.mids], hi = hs.map((q, i) => [Math.hypot(px - q[0], py - q[1]), i]).filter(([d]) => d < tol).sort((a, b) => a[0] - b[0])[0];
     if (hi) { gesture = startHandle(L, hi[1], px, py); return; }
   }
@@ -504,16 +514,20 @@ stage.addEventListener('pointermove', e => {
   if (gesture.mode === 'point') { L.shape.pts[gesture.i] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
   if (gesture.mode === 'move') {
     if (!gesture.moved && Math.hypot(px - gesture.px, py - gesture.py) * viewScale < 2) return;
-    const sn = snapMove(L, gesture.x0 + px - gesture.px, gesture.y0 + py - gesture.py);
+    let sn;
+    if (L.parent) { // x / y are in the parent's space: map the drag through it (no snapping)
+      const m = parentInverse(L), a = m.transformPoint({ x: px, y: py }), b = m.transformPoint({ x: gesture.px, y: gesture.py });
+      sn = { nx: gesture.x0 + a.x - b.x, ny: gesture.y0 + a.y - b.y, guides: [] };
+    } else sn = snapMove(L, gesture.x0 + px - gesture.px, gesture.y0 + py - gesture.py);
     S.guides = sn.guides;
     writeProp(L, 'x', S.t, +sn.nx.toFixed(2)); writeProp(L, 'y', S.t, +sn.ny.toFixed(2)); gesture.moved = true;
   } else if (gesture.mode === 'handle') { moveHandle(gesture, px, py);
   } else if (gesture.mode === 'rotate') {
-    const tr = evalTransform(L, S.t), a = Math.atan2(py - tr.y, px - tr.x);
+    const c = pivotWorld(L), a = Math.atan2(py - c[1], px - c[0]);
     let r = gesture.r0 + (a - gesture.a0) * 180 / Math.PI; if (e.shiftKey) r = Math.round(r / 15) * 15;
     writeProp(L, 'rotation', S.t, +r.toFixed(1)); gesture.moved = true;
   } else if (gesture.mode === 'scale') {
-    const tr = evalTransform(L, S.t), d = Math.hypot(px - tr.x, py - tr.y);
+    const c = pivotWorld(L), d = Math.hypot(px - c[0], py - c[1]);
     writeProp(L, 'scale', S.t, +Math.max(0.01, gesture.s0 * d / (gesture.d0 || 1)).toFixed(3)); gesture.moved = true;
   } else if (gesture.mode === 'pinch' && ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
@@ -1165,7 +1179,8 @@ function panelLayer(L) {
       key: { state: propKeyState(L, prop), toggle: () => { const k = findKey(L, prop, S.t); if (k) removeKey(L, prop, k.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } },
     });
   });
-  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
+  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows,
+    ...XFORM_PROPS.map(prop => keyNum(L, prop, PROP_META[prop].label, PROP_META[prop].min, PROP_META[prop].max, PROP_META[prop].step, 'prop-' + prop))));
   out.append(section('Timing',
     slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setStart(L, Math.min(v, L.end - 0.05))), onChange: () => commit() }),
     slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));

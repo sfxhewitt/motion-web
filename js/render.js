@@ -32,9 +32,8 @@ export function evalShape(L, t) { return evalNs(L, 'shape', t); }
 // world-space outline of a layer (for Move Along Path / Repeat Along Path)
 function pathOfLayer(project, id, t) {
   const L = project?.layers.find(l => l.id === id); if (!L || L.type !== 'shape') return null;
-  const s = evalShape(L, t), pts = shapePoints(s, 96);
-  const x = valueAt(L, 'x', t), y = valueAt(L, 'y', t), sc = valueAt(L, 'scale', t), r = valueAt(L, 'rotation', t) * D, c = Math.cos(r), sn = Math.sin(r);
-  return { pts: pts.map(([px, py]) => [x + (px * c - py * sn) * sc, y + (px * sn + py * c) * sc]), closed: s.kind !== 'path' || s.closed !== false };
+  const s = evalShape(L, t), pts = shapePoints(s, 96), m = layerMatrix(L, t, project);
+  return { pts: pts.map(([px, py]) => { const q = m.transformPoint({ x: px, y: py }); return [q.x, q.y]; }), closed: s.kind !== 'path' || s.closed !== false };
 }
 function fxCtx(L, t, project, extra = {}) {
   return { t, lt: t - L.start, dur: Math.max(0.01, L.end - L.start), fps: project?.fps || 30, pathOf: project ? id => pathOfLayer(project, id, t) : null, ...extra };
@@ -46,6 +45,18 @@ export function evalTransform(L, t, project = lastProject) {
   const b = L.type === 'shape' ? evalShape(L, t) : null;
   const c = fxCtx(L, t, project, { base: { x: tr.x, y: tr.y }, bh: b ? b.h : L.type === 'text' ? textLayout(measureCtx(), L.text).h : L.media ? L.media.h : project?.h || 0 });
   return applyTransformEffects(L, tr, t, c);
+}
+// local content coords -> composition coords:
+// parent's matrix · T(x, y) · R(rotation) · S(scale · Scale X/Y · flips) · skew · T(-pivot)
+// flip=false leaves flips out (selection box / handles stay upright). Parents never apply their flips to children.
+export function layerMatrix(L, t, project = lastProject, flip = true, depth = 0) {
+  const tr = evalTransform(L, t, project), v = p => valueAt(L, p, t);
+  let m = new DOMMatrix().translate(tr.x, tr.y).rotate(tr.rotation)
+    .scale(tr.scale * tr.sx * v('scaleX') * (flip && L.flipX ? -1 : 1), tr.scale * tr.sy * v('scaleY') * (flip && L.flipY ? -1 : 1));
+  const sk = v('skew'); if (sk) m = m.skewX(sk);
+  const ax = v('anchorX'), ay = v('anchorY'); if (ax || ay) m = m.translate(-ax, -ay);
+  const par = L.parent && depth < 16 && project?.layers.find(l => l.id === L.parent);
+  return par ? layerMatrix(par, t, project, false, depth + 1).multiply(m) : m;
 }
 export function evalText(L, t, project = lastProject) {
   const tx = { ...evalNs(L, 'text', t) };
@@ -337,7 +348,7 @@ export class Renderer {
       const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
       const drawTo = (c, tt = t, trr = tr) => {
         c.setTransform(s, 0, 0, s, 0, 0);
-        c.translate(trr.x, trr.y); c.rotate(trr.rotation * D); c.scale(trr.scale * trr.sx * (L.flipX ? -1 : 1), trr.scale * trr.sy * (L.flipY ? -1 : 1));
+        const m = layerMatrix(L, tt, project); c.transform(m.a, m.b, m.c, m.d, m.e, m.f);
         if (L.shadow?.on) { const sh = evalNs(L, 'shadow', tt), n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
         drawContent(c, L, project, evAt(tt));
       };
@@ -360,7 +371,8 @@ export class Renderer {
       if (useGL) {
         const b = layerBounds(L, project, lctx, t);
         const k = Math.abs(tr.scale) * s;
-        const c = { ...fxCtx(L, t, project), t: t0, s, cx: tr.x * s, cy: H - tr.y * s, hw: Math.max(1, b.w * Math.abs(tr.sx) * k / 2), hh: Math.max(1, b.h * Math.abs(tr.sy) * k / 2), rot: -tr.rotation * D, base: { x: tr.x, y: tr.y }, bh: b.h };
+        const o = layerMatrix(L, t, project).transformPoint({ x: 0, y: 0 });
+        const c = { ...fxCtx(L, t, project), t: t0, s, cx: o.x * s, cy: H - o.y * s, hw: Math.max(1, b.w * Math.abs(tr.sx) * k / 2), hh: Math.max(1, b.h * Math.abs(tr.sy) * k / 2), rot: -tr.rotation * D, base: { x: tr.x, y: tr.y }, bh: b.h };
         src = this.fx.apply(lc, items(), c, hooks);
       }
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);

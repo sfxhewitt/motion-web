@@ -47,6 +47,19 @@ with sync_playwright() as pw:
       const L2 = A.project.layers.find(l => l.id === L.id); return (L2.keys['shape.fill'] || []).map(k => [k.t, k.v]); }""")
     check('Color & Fill ◆ keys the fill and later edits add keys', len(r) == 2 and r[1] == [2, '#00ff00'], r)
 
+    # --- pivot, Scale X / Y, skew ---
+    r = E("""async () => { const st = await import('./js/state.js'), R = await import('./js/render.js'); const p = st.newProject('1:1');
+      const L = st.makeLayer(p, 'shape'); L.props.x = 500; L.props.y = 500; L.props.anchorX = 100; L.props.rotation = 90;
+      const a = R.layerMatrix(L, 0, p).transformPoint({ x: 100, y: 0 });   // the pivot stays put under rotation
+      const c = R.layerMatrix(L, 0, p).transformPoint({ x: 0, y: 0 });     // the content centre swings around it
+      const M = st.makeLayer(p, 'shape'); M.props.x = 0; M.props.y = 0; M.props.scaleX = 2; M.props.scaleY = 0.5; M.props.skew = 45;
+      const q = R.layerMatrix(M, 0, p).transformPoint({ x: 10, y: 10 });
+      return { a: [Math.round(a.x), Math.round(a.y)], c: [Math.round(c.x), Math.round(c.y)], q: [Math.round(q.x), Math.round(q.y)], defaults: [st.valueAt(L, 'scaleX', 0), st.valueAt(L, 'skew', 0)] }; }""")
+    check('pivot point, Scale X / Y and skew transform content', r['a'] == [500, 500] and r['c'] == [500, 400] and r['q'] == [40, 5] and r['defaults'] == [1, 0], r)
+    r = E("""async () => { const A = __app, L = A.project.layers.find(l => l.type === 'shape'); A.selectLayer(L.id); A.openSub('layer'); await new Promise(r => setTimeout(r, 50));
+      return ['scaleX', 'scaleY', 'skew', 'anchorX', 'anchorY'].every(k => document.querySelector('[data-testid=prop-' + k + ']') && document.querySelector('[data-testid=prop-' + k + '-key]')); }""")
+    check('Move & Transform shows keyframeable Scale X/Y, Skew and Pivot', r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

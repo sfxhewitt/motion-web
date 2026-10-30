@@ -8,7 +8,15 @@ export const PROP_META = {
   scale:    { label: 'Scale',   min: 0,     max: 5,    step: 0.01 },
   rotation: { label: 'Rotate',  min: -720,  max: 720,  step: 0.5 },
   opacity:  { label: 'Opacity', min: 0,     max: 1,    step: 0.01 },
+  scaleX:   { label: 'Scale X', min: -5,    max: 5,    step: 0.01 },
+  scaleY:   { label: 'Scale Y', min: -5,    max: 5,    step: 0.01 },
+  skew:     { label: 'Skew',    min: -85,   max: 85,   step: 0.5 },
+  anchorX:  { label: 'Pivot X', min: -2000, max: 2000, step: 1 },
+  anchorY:  { label: 'Pivot Y', min: -2000, max: 2000, step: 1 },
 };
+// extra transform values (Move & Transform): default when a layer doesn't store them
+export const XFORM_PROPS = ['scaleX', 'scaleY', 'skew', 'anchorX', 'anchorY'];
+const PROP_DEFAULT = { scaleX: 1, scaleY: 1, skew: 0, anchorX: 0, anchorY: 0 };
 
 export const ASPECTS = {
   '9:16': [1080, 1920], '16:9': [1920, 1080], '1:1': [1080, 1080], '4:5': [1080, 1350], '4:3': [1440, 1080],
@@ -123,7 +131,7 @@ export function evalNs(L, ns, t) {
 // Animated values may be numbers, vectors (arrays), hex colours or discrete values (bool / select / layer id).
 export function baseGet(L, prop) {
   if (prop in L.props) return L.props[prop];
-  const i = prop.indexOf('.'); if (i < 0) return L.props[prop];
+  const i = prop.indexOf('.'); if (i < 0) return PROP_DEFAULT[prop];
   const ns = prop.slice(0, i), rest = prop.slice(i + 1);
   if (NS.includes(ns)) return L[ns]?.[rest];
   if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); return f ? f.params[rest.slice(j + 1)] : undefined; }
