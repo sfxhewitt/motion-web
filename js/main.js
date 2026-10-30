@@ -1,4 +1,4 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
@@ -151,11 +151,11 @@ function moveLayer(L, d) {
 function splitAt(L, how) {
   const t = snapT(S.t);
   if (!(t > L.start + 1e-3 && t < L.end - 1e-3)) return toast('Move the playhead over the clip first');
-  if (how === 'start') L.start = t;
+  if (how === 'start') setStart(L, t);
   else if (how === 'end') L.end = t;
   else {
     const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
-    c.start = t; L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
+    setStart(c, t); L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
   }
   commit();
 }
@@ -1044,10 +1044,10 @@ function lockPage() {
 const snapT = t => { const f = P().fps; return Math.round(t * f) / f; };
 function bindClip(clip, L) {
   bindDrag(clip, {
-    onStart: e => ({ mode: e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm', s0: L.start, e0: L.end, snap: clone(L.keys) }),
+    onStart: e => ({ mode: e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm', s0: L.start, e0: L.end, o0: L.media?.offset, snap: clone(L.keys) }),
     onMove: (dt, c) => {
       // start never goes below 0; the end may run past the project duration (not rendered there, like Alight)
-      if (c.mode === 'l') L.start = Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)));
+      if (c.mode === 'l') { L.start = c.s0; if (L.media) L.media.offset = c.o0; setStart(L, Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)))); }
       else if (c.mode === 'r') L.end = Math.max(L.start + 0.05, snapT(c.e0 + dt));
       else { const d = Math.max(-c.s0, snapT(dt)); L.keys = clone(c.snap); L.start = c.s0; L.end = c.e0; shiftLayer(L, d); }
       clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px';
@@ -1157,7 +1157,7 @@ function panelLayer(L) {
   });
   out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
   out.append(section('Timing',
-    slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.start = Math.min(v, L.end - 0.05); }), onChange: () => commit() }),
+    slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setStart(L, Math.min(v, L.end - 0.05))), onChange: () => commit() }),
     slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
   const act = (ic, label, fn) => h('button', { class: 'act', onclick: fn }, icon(ic), label);
   out.append(h('div', { class: 'acts' },

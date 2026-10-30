@@ -185,6 +185,17 @@ export function allKeys(L) {
   return out;
 }
 
+// Move a clip's in-point; media layers slide their source offset with it so a trim cuts into the media
+// (never before the source's first frame).
+export function setStart(L, s) {
+  if (L.media && (L.type === 'video' || L.type === 'audio')) {
+    const o = L.media.offset || 0;
+    s = Math.max(s, L.start - o);
+    L.media.offset = +(o + s - L.start).toFixed(4);
+  }
+  L.start = s;
+}
+
 export function shiftLayer(L, dt) {
   L.start += dt; L.end += dt;
   for (const p of Object.keys(L.keys)) for (const k of L.keys[p]) k.t = +(k.t + dt).toFixed(4);

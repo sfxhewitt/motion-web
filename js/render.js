@@ -377,10 +377,16 @@ export class Renderer {
 
 // Keep <video> elements in step with the timeline.
 export function syncVideos(project, t, playing) {
+  // Clips split from one source share its media element: the clip under the playhead drives it.
+  const drive = new Map();
   for (const L of project.layers) {
     if (L.type !== 'video' && L.type !== 'audio') continue;
-    const m = media.get(L.media.id); if (!m || !m.el) continue;
-    const v = m.el, active = L.visible && t >= L.start && t < L.end;
+    const active = L.visible && t >= L.start && t < L.end;
+    if (active || !drive.has(L.media.id)) drive.set(L.media.id, { L, active });
+  }
+  for (const [id, { L, active }] of drive) {
+    const m = media.get(id); if (!m || !m.el) continue;
+    const v = m.el;
     const local = Math.max(0, t - L.start + (L.media.offset || 0));
     if (!active) { if (!v.paused) v.pause(); continue; }
     if (v.duration && local > v.duration) { if (!v.paused) v.pause(); continue; }
