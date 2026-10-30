@@ -16,6 +16,7 @@ with sync_playwright() as pw:
     pg.goto(BASE); pg.wait_for_function('window.__app && __app.project')
     pg.evaluate('localStorage.clear()'); pg.reload(); pg.wait_for_function('window.__app && __app.project')
     E = lambda js, arg=None: pg.evaluate(js, arg)
+    pg.click('[data-testid=home-open] >> nth=0'); pg.wait_for_timeout(300)
 
     # --- B1: trimming / splitting media clips moves the source offset ---
     r = E("""async () => { const st = await import('./js/state.js'); const p = st.newProject('16:9');
@@ -77,6 +78,20 @@ with sync_playwright() as pw:
     pg.wait_for_selector('[data-testid=wave]', timeout=8000)
     E("() => { __app.selectLayer(__app.project.layers[0].id); __app.openSub('edit'); }"); pg.wait_for_timeout(100)
     check('audio clip shows a waveform; Edit Audio has ◆ volume and fades', pg.locator('[data-testid=wave]').count() >= 1 and pg.locator('[data-testid=audio-volume-key]').count() == 1 and pg.locator('[data-testid=fade-in]').count() == 1)
+
+    # --- speed and reverse ---
+    r = E("""async () => { const st = await import('./js/state.js'); const p = st.newProject('1:1');
+      const L = st.makeLayer(p, 'video', { mediaId: 'v', w: 10, h: 10, mediaDuration: 6 }); L.start = 0; L.end = 4; L.media.offset = 1;
+      st.setSpeed(L, 2); const a = { end: L.end, t1: st.mediaTime(L, 1) };
+      st.setReverse(L, true); const b = { t0: st.mediaTime(L, 0), tEnd: st.mediaTime(L, 2) };
+      st.setEnd(L, 1); const c = { off: L.media.offset, t0: st.mediaTime(L, 0) };          // trimming a reversed clip's end keeps its first frame
+      st.setReverse(L, false); st.setStart(L, 0.5); const d = { off: L.media.offset };
+      return { a, b, c, d }; }""")
+    check('speed stretches the clip, reverse flips source time, trims keep frames', r == {'a': {'end': 2, 't1': 3}, 'b': {'t0': 5, 'tEnd': 1}, 'c': {'off': 3, 't0': 5}, 'd': {'off': 4}}, r)
+    E("() => { __app.selectLayer(__app.project.layers[0].id); }"); pg.click('[data-testid=tab-speed]'); pg.wait_for_timeout(100)
+    pg.click('[data-testid=speed-2]'); pg.click('[data-testid=reverse]'); pg.wait_for_timeout(50)
+    r = E("() => { const m = __app.project.layers[0].media; return [m.speed, m.reverse]; }")
+    check('Speed tile opens the Speed panel (2×, Reverse)', r == [2, True], r)
 
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])

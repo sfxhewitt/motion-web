@@ -1,5 +1,5 @@
 // Canvas compositor: draws layers, runs the WebGL effect chain, applies blend modes.
-import { valueAt, evalNs } from './state.js';
+import { valueAt, evalNs, mediaTime } from './state.js';
 import { FXEngine, EFFECTS, activeFx, evalParams, isShaderFx, applyTransformEffects, applyTextEffects, shapeEffects } from './effects.js';
 
 export const BLEND_MODES = [
@@ -403,18 +403,20 @@ export function syncVideos(project, t, playing) {
   for (const [id, { L, active }] of drive) {
     const m = media.get(id); if (!m || !m.el) continue;
     const v = m.el;
-    const local = Math.max(0, t - L.start + (L.media.offset || 0));
+    const local = mediaTime(L, t), sp = L.media.speed || 1, rev = !!L.media.reverse;
     if (!active) { if (!v.paused) v.pause(); continue; }
     if (v.duration && local > v.duration) { if (!v.paused) v.pause(); continue; }
     const g = mediaGain(L, t);
-    if (m.gain) { m.gain.gain.value = g; v.volume = 1; } else v.volume = g; // after an export the element plays through its gain node
-    if (playing) {
+    if (m.gain) { m.gain.gain.value = rev ? 0 : g; v.volume = 1; } else v.volume = g; // after an export the element plays through its gain node
+    if (playing && !rev) { // reversed clips can't play backwards: they seek frame by frame (silent)
       if (L.type === 'video') v.muted = g === 0;
+      const rate = Math.max(0.0625, Math.min(16, sp)); if (v.playbackRate !== rate) v.playbackRate = rate;
       if (Math.abs(v.currentTime - local) > 0.3) v.currentTime = local;
       if (v.paused) v.play().catch(() => {});
     } else {
       if (!v.paused) v.pause();
       if (Math.abs(v.currentTime - local) > 0.04 && !v.seeking) v.currentTime = local;
+      if (rev && playing && L.type === 'audio') v.muted = true;
     }
   }
 }

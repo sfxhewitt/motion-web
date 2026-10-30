@@ -1,4 +1,4 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
@@ -86,7 +86,7 @@ function waveCanvas(L, peaks) {
   const w = Math.max(4, Math.min(4096, Math.round((L.end - L.start) * S.pps))), H = 26, c = h('canvas', { class: 'wave', width: w, height: H, 'data-testid': 'wave' });
   const g = c.getContext('2d'); g.fillStyle = 'rgba(255,255,255,.55)';
   for (let x = 0; x < w; x++) {
-    const t = L.start + x / S.pps, i = Math.floor((t - L.start + (L.media.offset || 0)) * 100);
+    const t = L.start + x / S.pps, i = Math.floor(mediaTime(L, t) * 100);
     const a = (peaks[i] || 0) * mediaGain(L, t) * (H - 2);
     if (a > 0.3) g.fillRect(x, (H - a) / 2, 1, a);
   }
@@ -175,10 +175,10 @@ function splitAt(L, how) {
   const t = snapT(S.t);
   if (!(t > L.start + 1e-3 && t < L.end - 1e-3)) return toast('Move the playhead over the clip first');
   if (how === 'start') setStart(L, t);
-  else if (how === 'end') L.end = t;
+  else if (how === 'end') setEnd(L, t);
   else {
     const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
-    setStart(c, t); L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
+    setStart(c, t); setEnd(L, t); P().layers.splice(P().layers.indexOf(L), 0, c);
   }
   commit();
 }
@@ -616,7 +616,7 @@ function jumpKey(dir) {
   if (t == null) return toast(dir < 0 ? 'No earlier keyframe' : 'No later keyframe');
   seek(t); updateTransport();
 }
-const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing Curve', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
+const SUB_TITLE = { speed: 'Speed', layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing Curve', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
 const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
 function updateHeader() {
   const p = P(), L = selLayer();
@@ -1087,7 +1087,7 @@ function bindClip(clip, L) {
     onMove: (dt, c) => {
       // start never goes below 0; the end may run past the project duration (not rendered there, like Alight)
       if (c.mode === 'l') { L.start = c.s0; if (L.media) L.media.offset = c.o0; setStart(L, Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)))); }
-      else if (c.mode === 'r') L.end = Math.max(L.start + 0.05, snapT(c.e0 + dt));
+      else if (c.mode === 'r') { L.end = c.e0; if (L.media) L.media.offset = c.o0; setEnd(L, Math.max(L.start + 0.05, snapT(c.e0 + dt))); }
       else { const d = Math.max(-c.s0, snapT(dt)); L.keys = clone(c.snap); L.start = c.s0; L.end = c.e0; shiftLayer(L, d); }
       clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px';
       setExtent(L.end + viewT()); drawFrame();
@@ -1140,6 +1140,7 @@ function renderPanel() {
     case 'blend': content = L ? panelBlend(L) : need('Select a layer.'); break;
     case 'ease': ({ content, left, right } = fxPanelEase(L)); break;
     case 'presets': content = L ? panelPresets(L) : need('Select a layer.'); break;
+    case 'speed': content = L?.media ? panelSpeed(L) : need('Select a video or audio layer.'); break;
     case 'project': content = panelProject(); break;
     case 'points': ({ content, left } = panelPoints(L)); break;
     case 'draw': ({ content, right } = panelDraw(L)); break;
@@ -1161,7 +1162,7 @@ function tileGrid(L) {
   const editLabel = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', draw: 'Edit Drawing', solid: 'Edit Solid', adjust: 'Edit Effects' }[L.type] || 'Edit Shape';
   return h('div', { class: 'tiles' },
     h('div', { class: 'trow small' },
-      T('speed', 'speed', '', soon('Speed'), 'sm corner'),
+      T('speed', 'speed', '', hasSound ? open('speed') : () => toast('Speed works on video and audio clips'), 'sm corner' + (hasSound ? '' : ' off')),
       h('div', { class: 'tgroup' }, T('trim-start', 'splitl', '', () => splitAt(L, 'start'), 'sm'), T('split', 'split', '', () => splitAt(L, 'split'), 'sm'), T('trim-end', 'splitr', '', () => splitAt(L, 'end'), 'sm')),
       T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); delete L.keys['media.volume']; L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
     h('div', { class: 'trow three' },
@@ -1208,7 +1209,7 @@ function panelLayer(L) {
     ...XFORM_PROPS.map(prop => keyNum(L, prop, PROP_META[prop].label, PROP_META[prop].min, PROP_META[prop].max, PROP_META[prop].step, 'prop-' + prop))));
   out.append(section('Timing',
     slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setStart(L, Math.min(v, L.end - 0.05))), onChange: () => commit() }),
-    slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
+    slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setEnd(L, Math.max(v, L.start + 0.05))), onChange: () => commit() })));
   const act = (ic, label, fn) => h('button', { class: 'act', onclick: fn }, icon(ic), label);
   out.append(h('div', { class: 'acts' },
     act('center', 'Center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
@@ -1279,6 +1280,16 @@ function rulerSlider({ label, value, min, max, step = 10, onInput, onChange, rig
   row.set = nv => { v = nv; draw(); };
   requestAnimationFrame(draw);
   return row;
+}
+// Speed (0.1–8×, the clip stretches to cover the same source) + Reverse
+const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4];
+function panelSpeed(L) {
+  const m = L.media;
+  return h('div', {}, section('Speed',
+    slider({ label: 'Speed ×', value: m.speed || 1, min: 0.1, max: 8, step: 0.05, testid: 'speed', onInput: liveSet(v => setSpeed(L, v)), onChange: () => commit() }),
+    chips(SPEEDS.map(v => [v, v + '×', 'speed-' + v]), m.speed || 1, v => { setSpeed(L, +v); commit(); }),
+    toggle({ label: 'Reverse', value: !!m.reverse, testid: 'reverse', onChange: v => { setReverse(L, v); commit(); } })),
+    h('div', { class: 'hint' }, 'Reversed clips play silently.'));
 }
 // Volume (keyframeable) + Fade In / Fade Out for audio and video layers
 function soundFields(L) {

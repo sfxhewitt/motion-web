@@ -203,16 +203,41 @@ export function allKeys(L) {
   return out;
 }
 
+// Media clips map timeline time to source time: forward  src = offset + (t - start) · speed
+//                                               reversed src = offset + (end - t) · speed
+// so `offset` is the source time at the clip's first (forward) or last (reversed) frame.
+const isMedia = L => L.media && (L.type === 'video' || L.type === 'audio');
+export function mediaTime(L, t) {
+  const m = L.media, sp = m.speed || 1;
+  return Math.max(0, (m.offset || 0) + (m.reverse ? L.end - t : t - L.start) * sp);
+}
 // Move a clip's in-point; media layers slide their source offset with it so a trim cuts into the media
 // (never before the source's first frame).
 export function setStart(L, s) {
-  if (L.media && (L.type === 'video' || L.type === 'audio')) {
-    const o = L.media.offset || 0;
-    s = Math.max(s, L.start - o);
-    L.media.offset = +(o + s - L.start).toFixed(4);
+  if (isMedia(L) && !L.media.reverse) {
+    const o = L.media.offset || 0, sp = L.media.speed || 1;
+    s = Math.max(s, L.start - o / sp);
+    L.media.offset = +(o + (s - L.start) * sp).toFixed(4);
   }
   L.start = s;
 }
+// Move a clip's out-point (a reversed clip's source offset sits at its end)
+export function setEnd(L, e) {
+  if (isMedia(L) && L.media.reverse) {
+    const o = L.media.offset || 0, sp = L.media.speed || 1;
+    e = Math.min(e, L.end + o / sp);
+    L.media.offset = +(o + (L.end - e) * sp).toFixed(4);
+  }
+  L.end = e;
+}
+// Change a media clip's speed; the clip covers the same source span, so it gets longer / shorter.
+// Reversing keeps the span too (`offset` is its lowest source time either way).
+export function setSpeed(L, sp) {
+  const m = L.media, old = m.speed || 1;
+  L.end = L.start + (L.end - L.start) * old / sp; m.speed = sp;
+}
+// Play the clip's source span backwards (same frames, opposite order)
+export function setReverse(L, on) { L.media.reverse = !!on; }
 
 export function shiftLayer(L, dt) {
   L.start += dt; L.end += dt;
