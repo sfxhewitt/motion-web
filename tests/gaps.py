@@ -289,6 +289,15 @@ with sync_playwright() as pw:
       k('ArrowRight'); k('ArrowDown', true); return [L.props.x - x0, L.props.y - y0]; }""")
     check('arrow keys nudge the selected layer (Shift: 10 px)', r == [1, 10], r)
 
+    # --- text paragraph box + gradient text ---
+    r = E("""async () => { const R = await import('./js/render.js'); const c = document.createElement('canvas').getContext('2d');
+      const tx = { content: 'one two three four five six', size: 40, weight: 400, font: 'system', tracking: 0, lineHeight: 1.2, boxW: 0 };
+      const a = R.textLayout(c, tx).lines.length; tx.boxW = 150; const m = R.textLayout(c, tx);
+      return { a, b: m.lines.length, w: m.w, fits: m.widths.every(w => w <= 150 + 1) }; }""")
+    check('text Box Width wraps words into a paragraph', r['a'] == 1 and r['b'] > 1 and r['w'] == 150 and r['fits'], r)
+    E("() => { const A = __app, L = A.project.layers.find(l => l.type === 'text'); A.selectLayer(L.id); A.openSub('style'); }"); pg.wait_for_timeout(80)
+    check('text Color & Fill offers a gradient', pg.locator('#panelBody .ctl-tog').count() >= 1)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

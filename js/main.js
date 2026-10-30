@@ -1389,7 +1389,8 @@ function panelStyle(L) {
   if (L.type === 'shape') {
     const s = L.shape;
     out.append(section('Fill', T('Fill', s, 'fillOn'), keyColor(L, 'shape.fill', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'shape.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'shape.gradAngle', 'Angle', 0, 360) : null));
-  } else if (L.type === 'text') out.append(section('Color', keyColor(L, 'text.fill', 'Fill', 'fill-color')));
+  } else if (L.type === 'text') { const tx = L.text;
+    out.append(section('Color', keyColor(L, 'text.fill', 'Fill', 'fill-color'), T('Gradient', tx, 'gradient'), tx.gradient ? keyColor(L, 'text.fill2', 'Color 2') : null, tx.gradient ? keyNum(L, 'text.gradAngle', 'Angle', 0, 360) : null)); }
   else if (L.type === 'solid') {
     const s = L.solid;
     out.append(section('Solid', keyColor(L, 'solid.color', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'solid.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'solid.gradAngle', 'Angle', 0, 360) : null));
@@ -1506,6 +1507,7 @@ function panelEdit(L) {
     out.append(section('Text', ta,
       select({ label: 'Font', value: t.font, testid: 'text-font', options: [...Object.keys(FONTS).map(f => [f, f]), ...(P().fonts || []).map(f => ['f:' + f.id, f.name]), ['+import', 'Import Font…']],
         onChange: v => { if (v === '+import') { pickFont(L); renderPanel(); } else { t.font = v; commit(); } } }),
+      keyNum(L, 'text.boxW', 'Box Width', 0, Math.max(P().w, P().h) * 2, 1, 'text-box'),
       keyNum(L, 'text.size', 'Size', 8, 800, 1, 'text-size'), N('Weight', t, 'weight', 100, 900, 100), keyNum(L, 'text.tracking', 'Tracking', -0.2, 1, 0.01, 'text-tracking'), keyNum(L, 'text.lineHeight', 'Line Ht', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
       toggle({ label: 'Italic', value: t.italic, onChange: v => { t.italic = v; commit(); } })));

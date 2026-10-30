@@ -214,10 +214,19 @@ export function textLayout(ctx, tx) {
   const font = `${tx.italic ? 'italic ' : ''}${tx.weight} ${tx.size}px ${fontStack(tx.font)}`;
   ctx.font = font;
   if ('letterSpacing' in ctx) ctx.letterSpacing = (tx.tracking * tx.size) + 'px';
-  const lines = String(tx.content).split('\n');
+  let lines = String(tx.content).split('\n');
+  if (tx.boxW > 0) { // paragraph box: wrap words to the box width (a word longer than the box stays whole)
+    const out = [];
+    for (const para of lines) {
+      let cur = '';
+      for (const w of para.split(/(\s+)/)) { const next = cur + w; if (cur.trim() && ctx.measureText(next.trimEnd()).width > tx.boxW) { out.push(cur.trimEnd()); cur = w.trimStart(); } else cur = next; }
+      out.push(cur.trimEnd());
+    }
+    lines = out;
+  }
   const widths = lines.map(l => ctx.measureText(l).width);
   const lh = tx.size * tx.lineHeight;
-  return { font, lines, widths, lh, w: Math.max(1, ...widths), h: lh * lines.length };
+  return { font, lines, widths, lh, w: tx.boxW > 0 ? tx.boxW : Math.max(1, ...widths), h: lh * lines.length };
 }
 
 // Local-space bounds (w,h centered at origin) for hit-testing / overlay
@@ -291,7 +300,7 @@ function drawContent(ctx, L, project, ev = {}) {
         m.lines.forEach((ln, i) => {
           const y = -m.h / 2 + m.lh * (i + 0.5);
           if (tx.strokeW > 0) { ctx.lineWidth = tx.strokeW; ctx.strokeStyle = tx.stroke; ctx.lineJoin = 'round'; ctx.strokeText(ln, x, y); }
-          ctx.fillStyle = tx.fill; ctx.fillText(ln, x, y);
+          ctx.fillStyle = tx.gradient ? gradient(ctx, m.w, m.h, tx.fill, tx.fill2 || '#ffffff', tx.gradAngle ?? 90) : tx.fill; ctx.fillText(ln, x, y);
         });
       } else {
         // per-character drawing (Text Progress / Text Transform)

@@ -13,7 +13,7 @@ const S = () => X.S, L_ = () => X.selLayer();
 // ---------- labels ----------
 const SHAPE_LABEL = { w: 'Width', h: 'Height', radius: 'Corner', points: 'Points', inner: 'Inner', thickness: 'Thickness', fill: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle', stroke: 'Border Color', strokeW: 'Border Width' };
 const NS_LABEL = {
-  text: { fill: 'Text Color', stroke: 'Border Color', strokeW: 'Border Width', size: 'Text Size', tracking: 'Tracking', lineHeight: 'Line Height' },
+  text: { boxW: 'Box Width', fill2: 'Text Color 2', gradAngle: 'Gradient Angle', fill: 'Text Color', stroke: 'Border Color', strokeW: 'Border Width', size: 'Text Size', tracking: 'Tracking', lineHeight: 'Line Height' },
   solid: { color: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle' },
   shadow: { color: 'Shadow Color', blur: 'Shadow Blur', dx: 'Shadow X', dy: 'Shadow Y', alpha: 'Shadow Opacity' },
   media: { volume: 'Volume' },
