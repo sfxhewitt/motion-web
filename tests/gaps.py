@@ -223,6 +223,21 @@ with sync_playwright() as pw:
     with pg.expect_download() as dl: E('__app.shareProject()')
     check('Share Project hands over a .kntc.json file', dl.value.suggested_filename.endswith('.kntc.json'), dl.value.suggested_filename)
 
+    # --- colour tools: eyedropper on the preview + recent swatches ---
+    r = E("""async () => { const A = __app, L = A.project.layers.find(l => l.type === 'shape' && !l.group);
+      A.selectLayer(L.id); A.openSub('style'); await new Promise(r => setTimeout(r, 50));
+      const drop = !!document.querySelector('[data-testid=fill-color-drop]');
+      A.S.pick = null; const want = A.samplePreview(5, 5);
+      return { drop, want, id: L.id }; }""")
+    E("() => { __app.S.pick = null; }")
+    E("""() => { const A = __app, L = A.project.layers.find(l => l.id === A.S.sel); window.__picked = null;
+      A.S.pick = v => { window.__picked = v; }; document.querySelector('#stage').classList.add('picking'); }""")
+    bb = pg.locator('#stage').bounding_box(); pg.mouse.click(bb['x'] + 3, bb['y'] + 3); pg.wait_for_timeout(50)
+    picked = E('window.__picked')
+    check('colour fields have an eyedropper that samples the preview', r['drop'] and picked and picked.startswith('#') and len(picked) == 7, (r, picked))
+    E("""() => { const i = document.querySelector('[data-testid=fill-color]'); i.value = '#123456'; i.dispatchEvent(new Event('change')); }"""); pg.wait_for_timeout(50)
+    check('used colours show up as swatches', E("JSON.parse(localStorage.getItem('kntc.swatches'))[0]") == '#123456' and pg.locator('.csw').count() >= 1)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

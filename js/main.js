@@ -556,6 +556,7 @@ stage.addEventListener('pointerdown', e => {
   if (!P()) return;
   stage.setPointerCapture(e.pointerId);
   const [px, py] = stagePoint(e); ptrs.set(e.pointerId, [px, py]);
+  if (S.pick) { const set = S.pick; S.pick = null; stage.classList.remove('picking'); ptrs.delete(e.pointerId); set(samplePreview(px, py)); return; }
   if (S.playing) togglePlay(false);
   const L = selLayer();
   if (S.picking) { // eyedropper
@@ -1285,7 +1286,29 @@ const keyToggle = (L, prop) => ({ state: propKeyState(L, prop), toggle: () => { 
 // keyframeable colour / number for a nested value ('text.fill', 'shadow.blur' …): ◆ keys it at the playhead,
 // and once it is animated every edit writes a key
 function keyColor(L, prop, label, testid) {
-  return color({ label, value: valueAt(L, prop, S.t), key: keyToggle(L, prop), testid, onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: v => { writeProp(L, prop, S.t, v); commit(); } });
+  const set = v => { writeProp(L, prop, S.t, v); rememberColor(v); commit(); };
+  const row = color({ label, value: valueAt(L, prop, S.t), key: keyToggle(L, prop), testid, onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: set });
+  return h('div', { class: 'ctl-colorx' }, row, colorTools(set, testid));
+}
+// eyedropper + recently used colours under every colour field
+const recentColors = () => { try { return JSON.parse(localStorage.getItem('kntc.swatches')) || []; } catch { return []; } };
+function rememberColor(c) {
+  if (!/^#[0-9a-f]{6}$/i.test(c)) return;
+  const list = [c.toLowerCase(), ...recentColors().filter(x => x !== c.toLowerCase())].slice(0, 10);
+  try { localStorage.setItem('kntc.swatches', JSON.stringify(list)); } catch {}
+}
+function colorTools(set, testid) {
+  const pick = h('button', { class: 'ib cdrop', title: 'Pick a colour from the preview', 'data-testid': testid ? testid + '-drop' : null, onclick: () => startEyedropper(set) }, icon('eyedrop'));
+  return h('div', { class: 'cswatches' }, pick, ...recentColors().map(c => h('button', { class: 'csw', style: { background: c }, title: c, onclick: () => set(c) })));
+}
+// tap the preview to sample a pixel (the browser's own EyeDropper, which can sample anywhere, when there is one)
+function startEyedropper(set) {
+  if (window.EyeDropper && !matchMedia('(pointer: coarse)').matches) { new EyeDropper().open().then(r => set(r.sRGBHex.slice(0, 7))).catch(() => {}); return; }
+  S.pick = set; stage.classList.add('picking'); toast('Tap the preview to pick a colour');
+}
+function samplePreview(px, py) {
+  const k = view.width / P().w, d = view.getContext('2d').getImageData(Math.max(0, Math.min(view.width - 1, Math.round(px * k))), Math.max(0, Math.min(view.height - 1, Math.round(py * k))), 1, 1).data;
+  return '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
 }
 function keyNum(L, prop, label, min, max, step = 1, testid) {
   return slider({ label, value: valueAt(L, prop, S.t), min, max, step, testid, key: keyToggle(L, prop),
@@ -2282,7 +2305,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    importFont, addMarker, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
+    importFont, addMarker, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }

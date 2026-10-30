@@ -739,3 +739,9 @@ body[data-mode=none] .m-kf { display: none; }
 
 /* timeline markers: small flags on the ruler */
 .tl-mark { position: absolute; top: 0; margin-left: -5px; width: 10px; height: 14px; background: var(--mc); clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%); cursor: pointer; z-index: 2; }
+
+/* colour fields: eyedropper + recent swatches */
+.cswatches { display: flex; gap: 6px; align-items: center; padding: 2px 0 8px; overflow-x: auto; }
+.cswatches .cdrop { width: 30px; height: 30px; flex: none; }
+.cswatches .csw { width: 22px; height: 22px; flex: none; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.35); padding: 0; }
+#stage.picking, #stage.picking * { cursor: crosshair; }
