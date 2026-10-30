@@ -160,6 +160,9 @@ body:not([data-mode=none]) #fab, body.sheet-open #fab { display: none; }
 .kf { position: absolute; top: 0; bottom: 0; width: 44px; margin-left: -22px; z-index: 2; touch-action: none; cursor: pointer; }
 .kf::after { content: ''; position: absolute; left: 0; right: 0; top: -6px; bottom: -6px; }
 .kf::before { content: ''; position: absolute; left: 50%; top: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; transform: rotate(45deg); background: var(--bg); border: 1.6px solid #fff; border-radius: 2px; box-sizing: border-box; }
+/* Effects: the selected parameter's keyframes are large and filled, the rest small outlines */
+.kf.hi::before { width: 14px; height: 14px; margin: -7px 0 0 -7px; background: #fff; }
+.kf.lo::before { width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; background: transparent; border-width: 1.2px; }
 .kf.on::before { background: var(--ac); border-color: var(--ac); }
 /* long-press grab feedback */
 .clip.grabbed { z-index: 3; box-shadow: 0 0 0 2px var(--ac), 0 6px 18px rgba(0,0,0,.6); animation: grabpop .22s ease-out; }

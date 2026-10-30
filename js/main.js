@@ -1,7 +1,7 @@
 import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
-import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired } from './fxui.js';
+import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
 import { Renderer, BLEND_MODES, FONTS, media, evalTransform, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
@@ -751,12 +751,14 @@ function renderTimeline() {
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
     bindClip(clip, L);
     track.append(clip);
-    // merged keyframe diamonds (one per time)
+    // merged keyframe diamonds (one per time); in Effects, only the selected parameter's diamonds are lit
+    const focus = sel && S.tab === 'fx' ? fxEaseTarget(L) : null;
     const times = new Map();
     for (const { prop, k } of allKeys(L)) { const key = k.t.toFixed(3); if (!times.has(key)) times.set(key, []); times.get(key).push({ prop, k }); }
     for (const [tk, list] of times) {
       const on = list.some(x => S.selKeys.has(x.k.id));
-      const d = h('i', { class: 'kf' + (on ? ' on' : ''), style: { left: (+tk) * S.pps + 'px' }, 'data-testid': 'kf' });
+      const lit = focus ? (list.some(x => x.prop === focus) ? ' hi' : ' lo') : '';
+      const d = h('i', { class: 'kf' + (on ? ' on' : '') + lit, style: { left: (+tk) * S.pps + 'px' }, 'data-testid': 'kf' });
       bindKey(d, L, list); track.append(d);
     }
     // ☰ reorder handle: pinned to the right edge of the view (sticky), drawn dark over a clip and grey over empty track

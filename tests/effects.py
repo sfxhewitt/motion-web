@@ -129,6 +129,12 @@ with sync_playwright() as pw:
     ks = P(f"(() => {{ const l = {L}; const k = Object.keys(l.keys).find(k => k.endsWith('.mag')); return k && l.keys[k].map(q => [q.t, q.v]); }})()")
     check('effect params are keyframeable (◆ then edit at another time adds a key)', ks == [[0, 0], [2, 300]], ks)
     check('timeline shows the effect keyframes', pg.locator('.tl-row .kf').count() >= 2)
+    KF = "() => [[...document.querySelectorAll('.tl-row.sel .kf')].map(e => e.classList.contains('hi') ? 'hi' : e.classList.contains('lo') ? 'lo' : ''), document.querySelector('[data-testid=fx-ease]').classList.contains('off')]"
+    lit = P(KF)
+    P("document.querySelector('.fxp-l:not([data-testid=fxp-mag])').click()"); pg.wait_for_timeout(100)
+    unlit = P(KF)
+    pg.click('[data-testid=fxp-mag]'); pg.wait_for_timeout(100)
+    check('only the selected parameter lights its keyframes; easing dims for a parameter without them', lit == [['hi', 'hi'], False] and unlit == [['lo', 'lo'], True], (lit, unlit))
     # ---- Easing Curve ----
     pg.click('[data-testid=fx-ease]'); pg.wait_for_timeout(250)
     check('graph icon opens the Easing Curve panel', P("__app.S.tab") == 'ease' and 'Easing Curve' in pg.locator('body').inner_text() and pg.locator('[data-testid=bezier]').is_visible())
