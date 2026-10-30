@@ -736,3 +736,6 @@ body[data-mode=none] .m-kf { display: none; }
 .tl-label .fold { width: 22px; height: 22px; padding: 0; background: none; border: 0; color: #fff; transform: rotate(-90deg); transition: transform .15s; display: grid; place-items: center; }
 .tl-label .fold.shut { transform: rotate(180deg); }
 .tl-label .fold svg { width: 14px; height: 14px; }
+
+/* timeline markers: small flags on the ruler */
+.tl-mark { position: absolute; top: 0; margin-left: -5px; width: 10px; height: 14px; background: var(--mc); clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%); cursor: pointer; z-index: 2; }

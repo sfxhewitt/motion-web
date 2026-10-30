@@ -393,7 +393,10 @@ export class Renderer {
     if (tr.opacity <= 0 && L.type !== 'adjust') return;
     const shaderFx = fxs.filter(f => isShaderFx(EFFECTS[f.type]));
     const useGL = shaderFx.length > 0 && this.fx.ok;
-    const mb = fxs.find(f => f.type === 'motionblur'), echo = fxs.find(f => f.type === 'echo');
+    const mbFx = fxs.find(f => f.type === 'motionblur'), echo = fxs.find(f => f.type === 'echo');
+    // project-wide Motion Blur applies to every animated layer that has no Motion Blur effect of its own
+    const pmb = project.motionBlur?.on && L.type !== 'adjust' && Object.keys(L.keys).length ? project.motionBlur : null;
+    const mb = mbFx || pmb;
     const lc = this.layerCanvas, lctx = lc.getContext('2d');
     try {
       // texture sources referenced by layer params must be rendered before this layer uses the shared canvases
@@ -428,7 +431,7 @@ export class Renderer {
         const trr = tt === t ? tr : evalTransform(L, tt, project); x.save(); drawTo(x, tt, trr); x.restore();
         lctx.save(); lctx.globalAlpha = Math.max(0, Math.min(1, alpha * (tr.opacity > 0 ? trr.opacity / tr.opacity : 1))); lctx.globalCompositeOperation = comp; lctx.drawImage(tmp, 0, 0); lctx.restore(); };
       if (mb) {
-        const p = evalParams(L, mb, t), n = Math.max(2, Math.min(64, Math.round(p.samples))), span = p.shutter / 360 / (project.fps || 30);
+        const p = mbFx ? evalParams(L, mbFx, t) : { samples: pmb.samples || 8, shutter: pmb.shutter ?? 180 }, n = Math.max(2, Math.min(64, Math.round(p.samples))), span = p.shutter / 360 / (project.fps || 30);
         for (let k = 0; k < n; k++) sample(t + (k / (n - 1) - 0.5) * span, 1 / n, 'lighter');
       } else if (echo) {
         const p = evalParams(L, echo, t), n = Math.max(1, Math.round(p.n)), dec = 1 - p.decay / 100;

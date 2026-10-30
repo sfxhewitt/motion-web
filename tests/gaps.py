@@ -11,7 +11,7 @@ def check(name, cond, detail=''):
 
 with sync_playwright() as pw:
     b = pw.chromium.launch(args=['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required'])
-    pg = b.new_page(viewport={'width': 1440, 'height': 900}); errs = []
+    pg = b.new_context(viewport={'width': 1440, 'height': 900}, accept_downloads=True).new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))
     pg.goto(BASE); pg.wait_for_function('window.__app && __app.project')
     pg.evaluate('localStorage.clear()'); pg.reload(); pg.wait_for_function('window.__app && __app.project')
@@ -204,6 +204,24 @@ with sync_playwright() as pw:
           __import__('base64').b64encode(open(font, 'rb').read()).decode())
         check('font list has more fonts plus Import Font…', len(opts) >= 15 and '+import' in opts, opts)
         check('imported font is registered and applied to the text layer', r['font'].startswith('f:') and r['listed'] == 1 and r['loaded'], r)
+
+    # --- project motion blur, markers, beat markers, share ---
+    r = E("""async () => { const R = await import('./js/render.js'), st = await import('./js/state.js');
+      const p = st.newProject('1:1', 'mb', { bg: '#000000', fps: 10 }); p.w = p.h = 200;
+      const L = st.makeLayer(p, 'shape', { kind: 'rect' }); L.shape.w = L.shape.h = 20; L.shape.radius = 0; L.shape.fill = '#ffffff'; L.props.y = 100;
+      st.setKey(L, 'x', 0, 0, { type: 'linear' }); st.setKey(L, 'x', 1, 200); L.keys.x[0].ease = { type: 'linear' }; p.layers = [L];
+      const c = document.createElement('canvas'); c.width = c.height = 200; const r = new R.Renderer();
+      const lit = () => { r.render(p, 0.5, c, { skipMediaSync: true }); const d = c.getContext('2d').getImageData(0, 100, 200, 1).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] > 8) n++; return n; };
+      const sharp = lit(); p.motionBlur = { on: true, shutter: 180, samples: 8 }; const blurred = lit(); return { sharp, blurred }; }""")
+    check('project Motion Blur smears animated layers', r['blurred'] >= r['sharp'] + 8, r)
+    r = E("""() => { const A = __app; A.project.markers = []; A.seek(0.5); A.addMarker(0.5); A.addMarker(0.5); return A.project.markers.length; }""")
+    pg.wait_for_timeout(50)
+    check('markers: added at the playhead (no duplicates) and drawn on the ruler', r == 1 and pg.locator('[data-testid=marker]').count() == 1, r)
+    E("() => { const A = __app, L = A.project.layers.find(l => l.type === 'audio'); A.selectLayer(L.id); A.openSub('edit'); }"); pg.wait_for_timeout(100)
+    n0 = E('__app.project.markers.length'); pg.click('[data-testid=beat-markers]'); pg.wait_for_timeout(100)
+    check('Add Beat Markers runs on an audio clip', E('__app.project.markers.length') >= n0, E('__app.project.markers.length'))
+    with pg.expect_download() as dl: E('__app.shareProject()')
+    check('Share Project hands over a .kntc.json file', dl.value.suggested_filename.endswith('.kntc.json'), dl.value.suggested_filename)
 
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])

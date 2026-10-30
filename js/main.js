@@ -852,6 +852,13 @@ function renderTimeline() {
   addTicks(ruler, 0, G.extT);
   const endH = h('div', { class: 'tl-end-h', id: 'tlEndH', 'data-testid': 'end-marker', title: 'Drag to change the project duration' }, h('span', {}, 'END'));
   bindEnd(endH); ruler.append(endH);
+  for (const m of p.markers || []) {
+    const f = h('i', { class: 'tl-mark', style: { left: m.t * S.pps + 'px', '--mc': m.color || '#f7cc4a' }, title: 'Marker ' + tc(m.t) + ' (double-tap to remove)', 'data-testid': 'marker' });
+    f.addEventListener('pointerdown', e => e.stopPropagation());
+    f.addEventListener('click', e => { e.stopPropagation(); seek(m.t); });
+    f.addEventListener('dblclick', e => { e.stopPropagation(); p.markers = p.markers.filter(x => x !== m); commit(); });
+    ruler.append(f);
+  }
   inner.append(h('div', { class: 'tl-head' }, ruler));
   bindScrub(ruler);
   const depthOf = L => { let d = 0, g = L.group; while (g && d < 8) { d++; g = p.layers.find(l => l.id === g)?.group; } return d; };
@@ -1386,7 +1393,21 @@ function panelSpeed(L) {
 // Volume (keyframeable) + Fade In / Fade Out for audio and video layers
 function soundFields(L) {
   const { N } = fieldMakers(L), m = L.media, max = Math.max(0.1, L.end - L.start);
-  return [keyNum(L, 'media.volume', 'Volume', 0, 1, 0.01, 'audio-volume'), N('Fade In s', m, 'fadeIn', 0, max, 0.05, 'fade-in'), N('Fade Out s', m, 'fadeOut', 0, max, 0.05, 'fade-out')];
+  return [keyNum(L, 'media.volume', 'Volume', 0, 1, 0.01, 'audio-volume'), N('Fade In s', m, 'fadeIn', 0, max, 0.05, 'fade-in'), N('Fade Out s', m, 'fadeOut', 0, max, 0.05, 'fade-out'),
+    h('div', { class: 'acts' }, h('button', { class: 'act', 'data-testid': 'beat-markers', onclick: () => beatMarkers(L) }, icon('bookmark'), 'Add Beat Markers'))];
+}
+// beat markers: onsets in the clip's waveform (energy jumps well above the local average, at least 0.25 s apart)
+function beatMarkers(L) {
+  const pk = media.get(L.media.id)?.peaks; if (!pk) return toast('No sound to analyse in this clip');
+  const p = P(), ms = p.markers || (p.markers = []), found = [];
+  let last = -1;
+  for (let x = L.start; x < Math.min(L.end, p.duration); x += 0.01) {
+    const i = Math.floor(mediaTime(L, x) * 100); if (i < 1 || i >= pk.length) continue;
+    let avg = 0; for (let j = Math.max(0, i - 50); j < i; j++) avg += pk[j]; avg /= Math.min(50, i);
+    if (pk[i] > 0.1 && pk[i] > avg * 1.6 && pk[i] > pk[i - 1] && x - last >= 0.25) { found.push(snapT(x)); last = x; }
+  }
+  for (const t of found) if (!ms.some(m => Math.abs(m.t - t) < 1e-3)) ms.push({ id: uid(), t, color: '#8be1d4' });
+  ms.sort((a, b) => a.t - b.t); commit(); toast(found.length ? `Added ${found.length} beat marker${found.length > 1 ? 's' : ''}` : 'No clear beats found');
 }
 function panelEdit(L) {
   const out = h('div', {}), { N } = fieldMakers(L);
@@ -2066,9 +2087,13 @@ function openProjectSheet() {
         row('Frame Rate', '', dd('proj-fps', p.fps, [24, 25, 30, 48, 50, 60].map(f => [f, f + ' fps']), v => { P().fps = +v; commit(); })),
         row('Background', '', bgDD), bgPick,
         row('Duration', h('small', {}, 'seconds'), dur),
+        row('Motion Blur', h('small', {}, 'animated layers'), dd('proj-mblur', p.motionBlur?.on ? String(p.motionBlur.shutter) : 'off',
+          [['off', 'Off'], ['90', 'On · 90° shutter'], ['180', 'On · 180° shutter'], ['360', 'On · 360° shutter']],
+          v => { if (v === 'off') delete P().motionBlur; else P().motionBlur = { on: true, shutter: +v, samples: 8 }; commit(); })),
         h('div', { class: 'cr-acts' },
           act('menu', 'Projects', 'open-projects', () => { close(); openProjects(); }), act('plus', 'New', 'new-project', () => openCreate()),
-          act('export', 'Save JSON', 'export-json', exportJSON), act('up', 'Load JSON', 'import-json', () => $('#fileJson').click()), act('image', 'Frame PNG', 'export-png', exportPNG)))));
+          act('export', 'Save JSON', 'export-json', exportJSON), act('up', 'Load JSON', 'import-json', () => $('#fileJson').click()), act('image', 'Frame PNG', 'export-png', exportPNG),
+          act('dup', 'Share Project', 'share-project', shareProject), act('bookmark', 'Add Marker', 'add-marker', () => { addMarker(S.t); close(); })))));
   mark(isStd(p.aspect) ? p.aspect : 'custom'); updSize();
   root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
 }
@@ -2090,6 +2115,24 @@ function openProjects() {
       h('button', { class: 'mini', title: 'Delete', onclick: () => { if (x.id === P().id) return toast('Open another project first'); if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); openProjects(); } } }, icon('trash'))))));
 }
 function newProjectFlow() { openCreate(); }
+// the project as a .kntc.json file (media + fonts embedded) handed to the share sheet; downloads where sharing isn't offered
+async function projectFile() {
+  const p = clone(P()); p.media = {};
+  for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
+  for (const f of p.fonts || []) { const b = await store.getMedia(f.id); if (b) p.media[f.id] = await store.blobToDataURL(b); }
+  return new File([JSON.stringify(p)], (p.name || 'project').replace(/\W+/g, '_') + '.kntc.json', { type: 'application/json' });
+}
+async function shareProject() {
+  const f = await projectFile();
+  if (navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], title: P().name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  download(f, f.name); toast('Project saved — send the file; open it with Load JSON or Import on Home');
+}
+// ---- timeline markers (bookmarks): ruler flags; tap to jump, double-tap to remove ----
+function addMarker(t, color = '#f7cc4a') {
+  const p = P(), ms = p.markers || (p.markers = []), tt = snapT(t);
+  if (ms.some(m => Math.abs(m.t - tt) < 1e-3)) return toast('There is a marker here already');
+  ms.push({ id: uid(), t: tt, color }); ms.sort((a, b) => a.t - b.t); commit(); toast('Marker added');
+}
 async function exportJSON() {
   const p = clone(P()); p.media = {};
   for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
@@ -2214,6 +2257,7 @@ function buildChrome() {
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); if (selLayer()) duplicateLayer(selLayer()); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && selLayer()) { e.preventDefault(); selectAllKeys(); }
     else if (e.key === 'k') toggleKeyAll();
+    else if (e.key === 'm') addMarker(S.t);
     else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else if (copyMenu) closeCopyMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
@@ -2238,7 +2282,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    importFont, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
+    importFont, addMarker, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }
