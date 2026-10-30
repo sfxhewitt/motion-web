@@ -114,6 +114,21 @@ with sync_playwright() as pw:
     d = [round(b - a, 3) for a, b in zip(r0, r1)]
     check('dragging a selected keyframe moves the whole selection', len(set(d)) == 1 and d[0] > 0.3, (r0, r1))
 
+    # --- bezier points ---
+    r = E("""async () => { const R = await import('./js/render.js');
+      const corner = R.pathSample([[0, 0], [100, 0], [100, 100]], false), smooth = R.pathSample([[0, 0, 0, 0], [100, 0, 0, 50], [100, 100, 0, 0]], false, 8);
+      const mid = smooth[4]; return { corner: corner.length, smooth: smooth.length, bulge: mid[1] < -10 }; }""")
+    check('smooth path points sample as cubic beziers', r == {'corner': 3, 'smooth': 17, 'bulge': True}, r)
+    r = E("""async () => { const A = __app, p = A.project; const L = A.makeLayer(p, 'shape', { kind: 'path', pts: [[-100, -100], [100, -100], [100, 100], [-100, 100]] }); A.addLayer(L);
+      A.selectLayer(L.id); A.openSub('edit'); await new Promise(r => setTimeout(r, 50));
+      document.querySelector('[data-testid=pt-curve]').click(); return [A.S.tab, A.S.curve]; }""")
+    check('Edit Points has a working Curves toggle', r == ['points', True], r)
+    hp = E("""() => { const A = __app, L = A.project.layers[0], r = document.querySelector('#view').getBoundingClientRect(), s = r.width / A.project.w;
+      return [r.left + (L.props.x + 100) * s, r.top + (L.props.y - 100) * s]; }""")
+    pg.mouse.click(hp[0], hp[1]); pg.wait_for_timeout(100)
+    r = E("() => __app.project.layers[0].shape.pts.map(p => p.length)")
+    check('tapping a point in Curves mode makes it smooth', r.count(4) == 1, r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

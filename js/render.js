@@ -70,6 +70,22 @@ function gradient(ctx, w, h, c1, c2, angle) {
   g.addColorStop(0, c1); g.addColorStop(1, c2); return g;
 }
 
+// Vector path points are [x, y] (corner) or [x, y, hx, hy] (smooth: out-handle offset, the in-handle mirrors it).
+// Smooth paths are sampled as cubic beziers; all-corner paths stay as their points.
+export function pathSample(pts, closed, per = 16) {
+  if (!pts.some(p => p.length > 2)) return pts.map(p => [p[0], p[1]]);
+  const out = [], n = pts.length, segs = closed ? n : n - 1;
+  for (let i = 0; i < segs; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], c1x = a[0] + (a[2] || 0), c1y = a[1] + (a[3] || 0), c2x = b[0] - (b[2] || 0), c2y = b[1] - (b[3] || 0);
+    for (let j = 0; j < per; j++) {
+      const u = j / per, v = 1 - u, A = v * v * v, B = 3 * v * v * u, C = 3 * v * u * u, D_ = u * u * u;
+      out.push([A * a[0] + B * c1x + C * c2x + D_ * b[0], A * a[1] + B * c1y + C * c2y + D_ * b[1]]);
+    }
+  }
+  if (!closed && n) out.push([pts[n - 1][0], pts[n - 1][1]]);
+  return out;
+}
+
 // Polygon outline (local coords, centred) for every shape kind; curves are sampled. Used for drawing the polygonal
 // kinds and for "Convert to points" (Edit Points).
 export function shapePoints(s, n = 48) {
@@ -90,7 +106,7 @@ export function shapePoints(s, n = 48) {
     case 'half': polar(() => 1, n, Math.PI, Math.PI * 2, true); for (const p of out) p[1] += ry / 2; break;
     case 'flower': polar(a => 0.62 + 0.38 * Math.abs(Math.cos(2.5 * (a + Math.PI / 2))), n * 2); break;
     case 'heart': for (let i = 0; i < n * 2; i++) { const t = i / (n * 2) * Math.PI * 2; const x = 16 * Math.sin(t) ** 3, y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)); out.push([x / 17 * rx, (y + 2.5) / 15 * ry]); } break;
-    case 'path': for (const p of s.pts || []) out.push([p[0], p[1]]); break;
+    case 'path': out.push(...pathSample(s.pts || [], s.closed !== false)); break;
     case 'line': out.push([-rx, -ry], [rx, -ry], [rx, ry], [-rx, ry]); break;
     default: out.push([-rx, -ry], [rx, -ry], [rx, ry], [-rx, ry]);
   }

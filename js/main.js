@@ -2,7 +2,7 @@ import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, mediaGain, shapePoints, brushWidth } from './render.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, mediaGain, shapePoints, pathSample, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
@@ -335,10 +335,18 @@ function drawOverlay() {
   ctx.setTransform(k, 0, 0, k, 0, 0);
   const dot = (x, y, r = 5) => { ctx.beginPath(); ctx.arc(x, y, r / k * dpr, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); };
   if (S.tab === 'points' && L.type === 'shape' && L.shape.kind === 'path') {
-    const pts = (L.shape.pts || []).map(p => toWorld(L, p[0], p[1]));
+    const line = pathSample(L.shape.pts || [], L.shape.closed !== false, 24).map(p => toWorld(L, p[0], p[1]));
+    const pts = (L.shape.pts || []).map(p => toWorld(L, p[0], p[1])), cur = S.ptSel ?? pts.length - 1;
     ctx.lineWidth = 1.5 / k * dpr; ctx.strokeStyle = '#fff';
-    if (pts.length > 1) { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (L.shape.closed !== false) ctx.closePath(); ctx.stroke(); }
-    pts.forEach((p, i) => { const s = (i === pts.length - 1 ? 7 : 5) / k * dpr; ctx.fillStyle = i === pts.length - 1 ? ACCENT : '#fff'; ctx.fillRect(p[0] - s, p[1] - s, s * 2, s * 2); });
+    if (line.length > 1) { ctx.beginPath(); line.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (L.shape.closed !== false) ctx.closePath(); ctx.stroke(); }
+    // bezier handles of the selected smooth point
+    const sp = L.shape.pts?.[cur];
+    if (sp && sp.length > 2) for (const q of ptHandles(L, cur)) {
+      ctx.strokeStyle = ACCENT; ctx.beginPath(); ctx.moveTo(...pts[cur]); ctx.lineTo(...q); ctx.stroke();
+      ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(q[0], q[1], 6 / k * dpr, 0, 7); ctx.fill();
+    }
+    pts.forEach((p, i) => { const s = (i === cur ? 7 : 5) / k * dpr, smooth = L.shape.pts[i].length > 2; ctx.fillStyle = i === cur ? ACCENT : '#fff';
+      if (smooth) { ctx.beginPath(); ctx.arc(p[0], p[1], s * 1.1, 0, 7); ctx.fill(); } else ctx.fillRect(p[0] - s, p[1] - s, s * 2, s * 2); });
     const c = S.cursor || [P().w / 2, P().h / 2], g = 4 / k * dpr, l = 9 / k * dpr;
     ctx.strokeStyle = '#111'; ctx.lineWidth = 1.2 / k * dpr; ctx.beginPath();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(c[0] + dx * g, c[1] + dy * g); ctx.lineTo(c[0] + dx * l, c[1] + dy * l); }
@@ -398,7 +406,7 @@ const HANDLES = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-
 function dimsOf(L) {
   if (L.type === 'shape' && L.shape.kind !== 'path') return { get: () => [valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)], set: (w, h) => { writeProp(L, 'shape.w', S.t, w); writeProp(L, 'shape.h', S.t, h); } };
   if (L.type === 'shape') { const p0 = L.shape.pts.map(q => q.slice()), b = layerBounds(L, P(), null);
-    return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1)]); } }; }
+    return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y, hx, hy]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1), ...(hx != null ? [+(hx * fx).toFixed(1), +(hy * fy).toFixed(1)] : [])]); } }; }
   if (L.type === 'image' || L.type === 'video') return { get: () => [L.media.w, L.media.h], set: (w, h) => { L.media.w = w; L.media.h = h; } };
   return null; // text / solid / drawing: one uniform scale
 }
@@ -496,10 +504,13 @@ stage.addEventListener('pointerdown', e => {
   }
   if (S.tab === 'points' && L?.type === 'shape' && L.shape.kind === 'path') {
     if (ptrs.size > 1) return;
-    const pts = L.shape.pts, tol = 22 / viewScale;
+    const pts = L.shape.pts, tol = 22 / viewScale, cur = S.ptSel ?? pts.length - 1;
+    // the selected smooth point's handle dots come first
+    if (pts[cur]?.length > 2) { const hs = ptHandles(L, cur), j = hs.findIndex(q => Math.hypot(q[0] - px, q[1] - py) < tol);
+      if (j >= 0) { gesture = { mode: 'pthandle', L, i: cur, sign: j ? -1 : 1, moved: false }; return; } }
     const i = pts.findIndex(p => { const w = toWorld(L, p[0], p[1]); return Math.hypot(w[0] - px, w[1] - py) < tol; });
-    if (i >= 0) gesture = { mode: 'point', L, i, moved: false };
-    else { S.cursor = [px, py]; pts.push(toLocal(L, px, py).map(v => +v.toFixed(1))); gesture = { mode: 'point', L, i: pts.length - 1, moved: true }; }
+    if (i >= 0) { S.ptSel = i; const sm = S.curve && pts[i].length <= 2; if (sm) smoothPoint(L, i); gesture = { mode: 'point', L, i, moved: sm }; }
+    else { S.cursor = [px, py]; pts.push(toLocal(L, px, py).map(v => +v.toFixed(1))); S.ptSel = pts.length - 1; if (S.curve) smoothPoint(L, S.ptSel); gesture = { mode: 'point', L, i: pts.length - 1, moved: true }; }
     drawFrame(); renderPanel(); return;
   }
   if (S.tab === 'points' || S.tab === 'draw') return;
@@ -534,7 +545,8 @@ stage.addEventListener('pointermove', e => {
     if (Math.hypot(lp[0] - last[0], lp[1] - last[1]) > 2 / viewScale) { gesture.st.pts.push(lp.map(v => +v.toFixed(1))); drawFrame(); }
     return;
   }
-  if (gesture.mode === 'point') { L.shape.pts[gesture.i] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
+  if (gesture.mode === 'pthandle') { const p = L.shape.pts[gesture.i], q = toLocal(L, px, py); p[2] = +((q[0] - p[0]) * gesture.sign).toFixed(1); p[3] = +((q[1] - p[1]) * gesture.sign).toFixed(1); gesture.moved = true; drawFrame(); return; }
+  if (gesture.mode === 'point') { const p = L.shape.pts[gesture.i]; [p[0], p[1]] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
   if (gesture.mode === 'move') {
     if (!gesture.moved && Math.hypot(px - gesture.px, py - gesture.py) * viewScale < 2) return;
     let sn;
@@ -1380,6 +1392,15 @@ function updateCursorBoxes() {
   if (x && document.activeElement !== x) x.value = c[0].toFixed(1);
   if (y && document.activeElement !== y) y.value = c[1].toFixed(1);
 }
+// world positions of a smooth point's out / in handle dots
+function ptHandles(L, i) { const p = L.shape.pts[i]; return [toWorld(L, p[0] + p[2], p[1] + p[3]), toWorld(L, p[0] - p[2], p[1] - p[3])]; }
+// corner -> smooth: handles along the line between its neighbours (1/6 of their distance each side)
+function smoothPoint(L, i) {
+  const pts = L.shape.pts, n = pts.length, closed = L.shape.closed !== false, p = pts[i];
+  const a = pts[i > 0 ? i - 1 : closed ? n - 1 : i], b = pts[i < n - 1 ? i + 1 : closed ? 0 : i];
+  let hx = (b[0] - a[0]) / 6, hy = (b[1] - a[1]) / 6; if (!hx && !hy) hx = 40;
+  pts[i] = [p[0], p[1], +hx.toFixed(1), +hy.toFixed(1)];
+}
 function placePoint() {
   const L = selLayer(); if (!L || L.type !== 'shape' || L.shape.kind !== 'path') return;
   const c = S.cursor || [P().w / 2, P().h / 2];
@@ -1405,7 +1426,8 @@ function panelPoints(L) {
   padEl.addEventListener('pointercancel', () => { tp = null; });
   const left = [
     h('button', { class: 'ib' + (L.shape.closed !== false ? ' on' : ''), title: 'Closed path', 'data-testid': 'pt-close', onclick: () => { L.shape.closed = L.shape.closed === false; commit(); } }, icon('node')),
-    h('button', { class: 'ib dim', title: 'Curves (coming soon)', onclick: soon('Curved points') }, icon('bezier')),
+    h('button', { class: 'ib' + (S.curve ? ' on' : ''), title: 'Curves: tapped / new points become smooth', 'data-testid': 'pt-curve', onclick: () => { S.curve = !S.curve; renderPanel(); } }, icon('bezier')),
+    h('button', { class: 'ib', title: 'Make the selected point a corner', 'data-testid': 'pt-corner', onclick: () => { const i = S.ptSel ?? L.shape.pts.length - 1, p = L.shape.pts[i]; if (p) { L.shape.pts[i] = [p[0], p[1]]; commit(); } } }, icon('node')),
     h('button', { class: 'ib', title: 'Add point at cursor', onclick: placePoint }, icon('pluscircle')),
   ];
   return { content: padEl, left };
