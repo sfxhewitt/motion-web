@@ -420,11 +420,14 @@ export function panelEase(L) {
   const content = h('div', { class: 'ez' }, h('div', { class: 'ez-main' }, box, bar), presets, groups);
   const left = [
     h('button', { class: 'ib', title: 'Reverse', 'data-testid': 'ease-rev', disabled: !has, onclick: () => { apply(reverseEase(cur)); X.renderPanel(); } }, icon('swap')),
-    h('button', { class: 'ib', title: 'More', 'data-testid': 'ease-more', onclick: ev => { if (!has) return; popMenu(ev.currentTarget, [
-      ['Apply to All Keyframes', 'ezm-all', () => { const lay = ks[0].L, prop = ks[0].prop; (lay.keys[prop] || []).forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes of this property'); }],
-      ['Apply to Whole Layer', 'ezm-layer', () => { const lay = ks[0].L; for (const p in lay.keys) lay.keys[p].forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes in layer'); }],
-      ['Reset to Linear', 'ezm-linear', () => { apply(makeEase('linear')); X.renderPanel(); }],
-      ['Delete Keyframe', 'ezm-del', () => { ks.forEach(({ L: lay, prop, k }) => removeKey(lay, prop, k.id)); S().selKeys.clear(); X.commit(); }],
+    h('button', { class: 'ib', title: 'More', 'data-testid': 'ease-more', onclick: ev => { popMenu(ev.currentTarget, [
+      ['Copy Keyframes', 'ezm-copy', () => X.copySelectedKeys(), !has],
+      ['Paste Keyframes', 'ezm-paste', () => X.pasteKeysHere()],
+      ['Select All Keyframes', 'ezm-selall', () => X.selectAllKeys()],
+      has && ['Apply to All Keyframes', 'ezm-all', () => { const lay = ks[0].L, prop = ks[0].prop; (lay.keys[prop] || []).forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes of this property'); }],
+      has && ['Apply to Whole Layer', 'ezm-layer', () => { const lay = ks[0].L; for (const p in lay.keys) lay.keys[p].forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes in layer'); }],
+      has && ['Reset to Linear', 'ezm-linear', () => { apply(makeEase('linear')); X.renderPanel(); }],
+      has && ['Delete Keyframe', 'ezm-del', () => { ks.forEach(({ L: lay, prop, k }) => removeKey(lay, prop, k.id)); S().selKeys.clear(); X.commit(); }],
     ], 'ease-menu'); } }, icon('dots')),
   ];
   return { content, left, cls: 'ease' };

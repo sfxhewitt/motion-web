@@ -93,6 +93,27 @@ with sync_playwright() as pw:
     r = E("() => { const m = __app.project.layers[0].media; return [m.speed, m.reverse]; }")
     check('Speed tile opens the Speed panel (2×, Reverse)', r == [2, True], r)
 
+    # --- keyframe clipboard + moving a selection together ---
+    r = E("""async () => { const st = await import('./js/state.js'); const p = st.newProject('1:1');
+      const A = st.makeLayer(p, 'shape'), B = st.makeLayer(p, 'text');
+      st.setKey(A, 'x', 1, 100); st.setKey(A, 'x', 2, 300); st.setKey(A, 'shape.fill', 2, '#ff0000');
+      const clip = st.copyKeys(st.allKeys(A)); const ks = st.pasteKeys(B, clip, 5);
+      return { n: ks.length, x: B.keys.x.map(k => [k.t, k.v]), fill: !!B.keys['shape.fill'] }; }""")
+    check('copy / paste keyframes keeps spacing, skips props the target lacks', r == {'n': 2, 'x': [[5, 100], [6, 300]], 'fill': False}, r)
+    r = E("""async () => { const A = __app, L = A.project.layers.find(l => l.type === 'shape' && Object.keys(l.keys).length);
+      A.selectLayer(L.id); A.S.selKeys.clear(); const before = Object.values(L.keys).flat().map(k => k.t);
+      document.activeElement?.blur(); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, bubbles: true }));
+      return { sel: A.S.selKeys.size, n: before.length }; }""")
+    check('Ctrl+A selects every keyframe on the layer', r['sel'] == r['n'] and r['n'] > 1, r)
+    # drag one selected diamond -> all selected keys move by the same amount
+    kf = pg.locator('.tl-row.sel [data-testid=kf]').first; bb = kf.bounding_box()
+    r0 = E("() => { const L = __app.project.layers.find(l => l.id === __app.S.sel); return Object.values(L.keys).flat().map(k => k.t).sort((a, b) => a - b); }")
+    pg.mouse.move(bb['x'] + bb['width'] / 2, bb['y'] + bb['height'] / 2); pg.mouse.down(); pg.wait_for_timeout(450)
+    pps = E('__app.S.pps'); pg.mouse.move(bb['x'] + bb['width'] / 2 + pps * 0.5, bb['y'] + bb['height'] / 2, steps=6); pg.mouse.up(); pg.wait_for_timeout(100)
+    r1 = E("() => { const L = __app.project.layers.find(l => l.id === __app.S.sel); return Object.values(L.keys).flat().map(k => k.t).sort((a, b) => a - b); }")
+    d = [round(b - a, 3) for a, b in zip(r0, r1)]
+    check('dragging a selected keyframe moves the whole selection', len(set(d)) == 1 and d[0] > 0.3, (r0, r1))
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

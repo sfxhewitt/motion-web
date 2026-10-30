@@ -197,6 +197,21 @@ export function writeProp(L, prop, t, v) {
   if (hasKeys(L, prop)) setKey(L, prop, t, v); else baseSet(L, prop, v);
 }
 
+// Keyframe clipboard: keys stored relative to the earliest copied one; pasted at the playhead onto any layer
+// (effect keys only land on a layer that has that effect)
+export function copyKeys(list) {
+  const t0 = Math.min(...list.map(x => x.k.t));
+  return { keys: list.map(({ prop, k }) => ({ prop, dt: +(k.t - t0).toFixed(4), v: clone(k.v), ease: clone(k.ease) })) };
+}
+export function pasteKeys(L, clip, t) {
+  const out = [];
+  for (const q of clip?.keys || []) {
+    if (baseGet(L, q.prop) === undefined && !(q.prop in PROP_META)) continue;
+    out.push(setKey(L, q.prop, +(t + q.dt).toFixed(4), clone(q.v), clone(q.ease)));
+  }
+  return out;
+}
+
 export function allKeys(L) {
   const out = [];
   for (const p of Object.keys(L.keys)) for (const k of L.keys[p]) out.push({ prop: p, k });

@@ -1,4 +1,4 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, copyKeys, pasteKeys, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
@@ -1097,11 +1097,17 @@ function bindClip(clip, L) {
 }
 function bindKey(d, L, list) {
   bindDrag(d, {
-    onStart: () => ({ t0: list[0].k.t }),
-    onMove: (dt, c) => { const nt = Math.max(0, snapT(c.t0 + dt)); for (const { k } of list) k.t = nt; d.style.left = nt * S.pps + 'px'; setExtent(nt + viewT()); },
+    // a grabbed diamond that is part of a multi-key selection moves the whole selection by the same amount
+    onStart: () => { const sel = list.some(x => S.selKeys.has(x.k.id)) ? selectedKeyObjs() : [];
+      const all = sel.length > list.length ? sel : list.map(x => ({ L, ...x }));
+      const els = all.length > list.length ? [...tl.querySelectorAll('.kf.on')].map(el => [el, parseFloat(el.style.left)]) : [[d, list[0].k.t * S.pps]];
+      return { t0: list[0].k.t, all: all.map(x => ({ ...x, t0: x.k.t })), lo: Math.min(...all.map(x => x.k.t)), els }; },
+    onMove: (dt, c) => { const d0 = Math.max(-c.lo, snapT(c.t0 + dt) - c.t0); for (const x of c.all) x.k.t = +(x.t0 + d0).toFixed(4);
+      for (const [el, x0] of c.els) el.style.left = x0 + d0 * S.pps + 'px';
+      setExtent(c.t0 + d0 + viewT()); drawFrame(); },
     onEnd: (moved, c, ev) => {
       S.sel = L.id; S.multi.clear();
-      if (moved) { for (const p of new Set(list.map(x => x.prop))) L.keys[p].sort((a, b) => a.t - b.t); }
+      if (moved) { for (const x of c.all) x.L.keys[x.prop].sort((a, b) => a.t - b.t); }
       else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = Math.min(P().duration, list[0].k.t); if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
       commit();
     },
@@ -1721,6 +1727,22 @@ function openCopyMenu() {
   cmIn.style.maxHeight = Math.round(r.top - 10 - 12 - 50) + 'px';
   $('#btnCopy').classList.add('on');
 }
+// keyframe clipboard (localStorage, so it works across projects)
+function copySelectedKeys() {
+  const ks = selectedKeyObjs(); if (!ks.length) return toast('Select keyframes first');
+  const L = ks[0].L, list = ks.filter(x => x.L === L);
+  localStorage.setItem('kntc.keyclip', JSON.stringify(copyKeys(list))); toast(`Copied ${list.length} keyframe${list.length > 1 ? 's' : ''}`);
+}
+function pasteKeysHere() {
+  const L = selLayer(); if (!L) return toast('Select a layer first');
+  let clip = null; try { clip = JSON.parse(localStorage.getItem('kntc.keyclip')); } catch {}
+  if (!clip?.keys?.length) return toast('No keyframes copied');
+  const ks = pasteKeys(L, clip, snapT(S.t)); if (!ks.length) return toast('Those keyframes do not fit this layer');
+  S.selKeys.clear(); ks.forEach(k => S.selKeys.add(k.id)); commit(); toast(`Pasted ${ks.length} keyframe${ks.length > 1 ? 's' : ''}`);
+}
+function selectAllKeys() {
+  const L = selLayer(); if (!L) return; S.selKeys.clear(); for (const { k } of allKeys(L)) S.selKeys.add(k.id); renderTimeline(); renderPanel();
+}
 function selectedKeyObjs() {
   const out = [];
   for (const L of P().layers) for (const { prop, k } of allKeys(L)) if (S.selKeys.has(k.id)) out.push({ L, prop, k });
@@ -2072,6 +2094,10 @@ function buildChrome() {
     if ((!$('#home').hidden || !$('#create').hidden) && e.key !== 'Escape') return; // editor shortcuts only in the editor
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') { e.preventDefault(); if (S.selKeys.size) copySelectedKeys(); else if (selLayer()) copyLayers(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') { e.preventDefault(); if (S.tab === 'ease' && selLayer()) pasteKeysHere(); else pasteLayers(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); if (selLayer()) duplicateLayer(selLayer()); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && selLayer()) { e.preventDefault(); selectAllKeys(); }
     else if (e.key === 'k') toggleKeyAll();
     else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else if (copyMenu) closeCopyMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -2087,7 +2113,7 @@ function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
-  initFxUI({ S, P, selLayer, commit, renderPanel, drawFrame, renderTimeline, refreshAll, selectedKeyObjs });
+  initFxUI({ S, P, selLayer, commit, renderPanel, drawFrame, renderTimeline, refreshAll, selectedKeyObjs, copySelectedKeys, pasteKeysHere, selectAllKeys });
   buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap(); bindPreviewZoom();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
