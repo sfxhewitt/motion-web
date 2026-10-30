@@ -2030,25 +2030,31 @@ function download(blob, name) {
 function openExport() {
   if (S.playing) togglePlay(false);
   const fm = supportedFormats(); const p = P();
-  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: Math.min(p.w, p.h), fps: p.fps, mbps: 10, audio: true };
-  const fmtOpts = [['auto', 'Auto'], ['mp4', 'MP4' + (fm.mp4 ? '' : ' ✕')], ['webm', 'WebM' + (fm.webm ? '' : ' ✕')]];
-  const info = h('div', { class: 'hint' });
-  const upd = () => { const s = exportSize(p, opts.shortSide); info.textContent = `${s.w}×${s.h} · ${opts.fps}fps · ${p.duration}s · ~${(opts.mbps * p.duration / 8).toFixed(1)} MB · renders in real time`; };
+  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: Math.min(p.w, p.h), fps: p.fps, mbps: 10, audio: true, transparent: false };
+  const fmtOpts = [['auto', 'Auto'], ['mp4', 'MP4' + (fm.mp4 ? '' : ' ✕')], ['webm', 'WebM' + (fm.webm ? '' : ' ✕')], ['gif', 'GIF'], ['png', 'PNG Sequence (ZIP)']];
+  const info = h('div', { class: 'hint', 'data-testid': 'export-info' });
+  const exact = () => (opts.format === 'gif' || opts.format === 'png' || typeof VideoEncoder !== 'undefined');
+  const upd = () => {
+    const s = exportSize(p, opts.shortSide), still = opts.format === 'gif' || opts.format === 'png';
+    info.textContent = `${s.w}×${s.h} · ${opts.format === 'gif' ? Math.min(opts.fps, 50) : opts.fps}fps · ${p.duration}s` + (still ? '' : ` · ~${(opts.mbps * p.duration / 8).toFixed(1)} MB`) + (exact() ? ' · renders frame by frame' : ' · renders in real time');
+    tr.hidden = !['webm', 'gif', 'png'].includes(opts.format);
+  };
+  const tr = toggle({ label: 'Transparent background', value: opts.transparent, testid: 'export-transparent', onChange: v => (opts.transparent = v) });
   const prog = h('div', { class: 'prog' }, h('i'));
   const result = h('div', { class: 'result' });
   const go = h('button', { class: 'primary wide', 'data-testid': 'export-start' }, icon('export'), 'Render');
   go.onclick = async () => {
     go.disabled = true; result.replaceChildren(); prog.classList.add('run');
     try {
-      const r = await exportVideo(p, { format: opts.format, shortSide: opts.shortSide, fps: opts.fps, bitrate: opts.mbps * 1e6, audio: opts.audio,
+      const r = await exportVideo(p, { format: opts.format, shortSide: opts.shortSide, fps: opts.fps, bitrate: opts.mbps * 1e6, audio: opts.audio, transparent: opts.transparent,
         onProgress: f => (prog.firstChild.style.width = (f * 100).toFixed(1) + '%') });
       prog.firstChild.style.width = '100%';
       const name = `${p.name.replace(/\W+/g, '_')}_${r.w}x${r.h}.${r.ext}`;
       const file = new File([r.blob], name, { type: r.blob.type });
-      window.__lastExport = { size: r.blob.size, mime: r.mime, name, w: r.w, h: r.h };
+      window.__lastExport = { size: r.blob.size, mime: r.mime, name, w: r.w, h: r.h, exact: !!r.exact, frames: r.frames };
       const url = URL.createObjectURL(r.blob);
-      result.append(h('div', { class: 'hint', 'data-testid': 'export-result' }, `${name} · ${(r.blob.size / 1048576).toFixed(2)} MB · ${r.mime}`),
-        h('video', { src: url, controls: true, playsinline: true, muted: true, loop: true, class: 'preview' }),
+      const pv = r.ext === 'gif' ? h('img', { src: url, class: 'preview', alt: '' }) : r.ext === 'zip' ? h('div', { class: 'hint' }, `${r.frames} PNG frames`) : h('video', { src: url, controls: true, playsinline: true, muted: true, loop: true, class: 'preview' });
+      result.append(h('div', { class: 'hint', 'data-testid': 'export-result' }, `${name} · ${(r.blob.size / 1048576).toFixed(2)} MB · ${r.mime}`), pv,
         h('div', { class: 'acts' },
           h('a', { class: 'act', href: url, download: name, 'data-testid': 'export-download' }, icon('export'), 'Download'),
           navigator.canShare && navigator.canShare({ files: [file] }) ? h('button', { class: 'act', onclick: () => navigator.share({ files: [file], title: p.name }).catch(() => {}) }, icon('dup'), 'Share / Save to Photos') : null));
@@ -2056,14 +2062,14 @@ function openExport() {
     go.disabled = false; prog.classList.remove('run');
   };
   upd();
-  openDialog('Export Video', h('div', { class: 'plist' },
-    select({ label: 'Format', value: opts.format, options: fmtOpts, testid: 'export-format', onChange: v => (opts.format = v) }),
+  openDialog('Export', h('div', { class: 'plist' },
+    select({ label: 'Format', value: opts.format, options: fmtOpts, testid: 'export-format', onChange: v => { opts.format = v; upd(); } }),
     chips([[480, '480p'], [720, '720p'], [1080, '1080p'], [1440, '1440p'], [2160, '4K']].map(([v, t]) => [v, t, 'export-res-' + v]), opts.shortSide, v => { opts.shortSide = v; upd(); }),
-    select({ label: 'FPS', value: String(opts.fps), testid: 'export-fps', options: [['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
+    select({ label: 'FPS', value: String(opts.fps), testid: 'export-fps', options: [['12', '12'], ['15', '15'], ['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
     slider({ label: 'Mbps', value: opts.mbps, min: 1, max: 40, step: 1, onInput: v => { opts.mbps = v; upd(); } }),
-    toggle({ label: 'Video audio', value: opts.audio, onChange: v => (opts.audio = v) }),
-    info, go, prog, result,
-    h('div', { class: 'hint small' }, 'Keep this tab in front while rendering. Safari records MP4 (H.264); Chrome/Firefox record WebM (Chrome 126+ may also offer MP4).')));
+    toggle({ label: 'Audio', value: opts.audio, onChange: v => (opts.audio = v) }),
+    tr, info, go, prog, result,
+    h('div', { class: 'hint small' }, 'Video renders every frame exactly (MP4 / WebM via WebCodecs; older browsers record in real time — keep the tab in front). GIF, PNG frames and WebM can keep a transparent background.')));
   // chip selection highlight
   dlg.querySelectorAll('.chips .chip').forEach(b => b.addEventListener('click', () => { dlg.querySelectorAll('.chips .chip').forEach(x => x.classList.remove('on')); b.classList.add('on'); }));
 }

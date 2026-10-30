@@ -295,12 +295,12 @@ export class Renderer {
   get fx() { return this._fx || (this._fx = new FXEngine()); } // lazy: one WebGL context per renderer, only when an effect needs it
   _size(c, w, h) { if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } }
 
-  render(project, t, target, { skipMediaSync = false } = {}) {
+  render(project, t, target, { skipMediaSync = false, transparent = false } = {}) {
     lastProject = project; lastT = t; this.project = project;
     const ctx = target.getContext('2d');
     const W = target.width, H = target.height, s = W / project.w;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = project.bg; ctx.fillRect(0, 0, W, H);
+    if (transparent) ctx.clearRect(0, 0, W, H); else { ctx.fillStyle = project.bg; ctx.fillRect(0, 0, W, H); }
     this._size(this.layerCanvas, W, H);
     const Ls = project.layers, live = L => L.visible && t >= L.start && t < L.end && L.type !== 'audio';
     const canClip = L => L.type !== 'adjust' && L.type !== 'audio';

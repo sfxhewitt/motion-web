@@ -129,6 +129,29 @@ with sync_playwright() as pw:
     r = E("() => __app.project.layers[0].shape.pts.map(p => p.length)")
     check('tapping a point in Curves mode makes it smooth', r.count(4) == 1, r)
 
+    # --- export: frame-accurate WebM via WebCodecs, GIF, PNG ZIP, transparency ---
+    E("() => { __app.project.duration = 1; __app.commit(); }")
+    r = E("""async () => { const X = await import('./js/export.js'); await X.formatsReady; const p = __app.project;
+      const out = {};
+      const v = await X.exportVideo(p, { format: 'webm', shortSide: 240, fps: 12, bitrate: 1e6, audio: true });
+      const url = URL.createObjectURL(v.blob), el = document.createElement('video'); el.muted = true; el.src = url;
+      await new Promise(r => { el.onloadedmetadata = r; el.onerror = r; });
+      out.webm = { exact: !!v.exact, w: el.videoWidth, dur: +el.duration.toFixed(2), size: v.blob.size };
+      const g = await X.exportVideo(p, { format: 'gif', shortSide: 120, fps: 10, transparent: true });
+      const img = new Image(); img.src = URL.createObjectURL(g.blob); await img.decode().catch(() => {});
+      const head = String.fromCharCode(...new Uint8Array(await g.blob.slice(0, 6).arrayBuffer()));
+      out.gif = { head, w: img.naturalWidth, ok: img.complete && img.naturalWidth > 0 };
+      const z = await X.exportVideo(p, { format: 'png', shortSide: 120, fps: 5, transparent: true });
+      const zb = new Uint8Array(await z.blob.arrayBuffer());
+      out.png = { frames: z.frames, sig: zb[0] === 0x50 && zb[1] === 0x4b, firstPng: zb[30 + 'frame_00001.png'.length + 1] === 0x50 };
+      return out; }""")
+    check('WebM export renders every frame (WebCodecs) at the right length', r['webm']['exact'] and r['webm']['w'] == 240 and abs(r['webm']['dur'] - 1) < 0.15 and r['webm']['size'] > 500, r['webm'])
+    check('GIF export decodes', r['gif']['head'] == 'GIF89a' and r['gif']['ok'] and r['gif']['w'] > 0, r['gif'])
+    check('PNG sequence ZIP has one PNG per frame', r['png'] == {'frames': 5, 'sig': True, 'firstPng': True}, r['png'])
+    r = E("""async () => { const R = await import('./js/render.js'); const c = document.createElement('canvas'); c.width = 60; c.height = 60;
+      new R.Renderer().render({ ...__app.project, layers: [] }, 0, c, { transparent: true }); return c.getContext('2d').getImageData(5, 5, 1, 1).data[3]; }""")
+    check('transparent render leaves the background clear', r == 0, r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()
