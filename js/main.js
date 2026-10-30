@@ -1435,9 +1435,16 @@ function panelBorder(L) {
 }
 
 function panelBlend(L) {
+  const mt = L.matte || {}, others = P().layers.filter(o => o !== L && visualLayer(o) && o.type !== 'group');
+  const setM = patch => { const n = { ...mt, ...patch }; if (n.layer) L.matte = n; else delete L.matte; commit(); };
   return h('div', {},
-    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, testid: 'opacity', onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }),
-    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')));
+    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, testid: 'opacity', key: keyToggle(L, 'opacity'), onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }),
+    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')),
+    section('Mask (track matte)',
+      select({ label: 'Mask Layer', value: mt.layer || '', testid: 'matte-layer', options: [['', 'None'], ...others.map(o => [o.id, o.name])], onChange: v => setM({ layer: v || null }) }),
+      mt.layer ? chips([['alpha', 'Alpha', 'matte-alpha'], ['luma', 'Luma', 'matte-luma']], mt.mode || 'alpha', v => setM({ mode: v })) : null,
+      mt.layer ? toggle({ label: 'Invert', value: !!mt.invert, testid: 'matte-invert', onChange: v => setM({ invert: v }) }) : null,
+      mt.layer ? h('div', { class: 'hint' }, 'Hide the mask layer (eye) if it should only cut, not show.') : null));
 }
 
 // ---- Edit Points (vector path): trackpad cursor + tap to place, or tap / drag directly on the preview ----

@@ -351,6 +351,20 @@ export class Renderer {
       draw(ctx, L, OPS[L.blend] || 'source-over');
     }
   }
+  // track matte: keep src only where the matte layer is (alpha) or bright (luma); invert keeps the rest
+  _matte(src, L, t, s, W, H, project, depth) {
+    const { layer, mode = 'alpha', invert = false } = L.matte;
+    const m = layer !== L.id && this._refLayer(layer, t, s, W, H, project, depth); if (!m) return src;
+    if (mode === 'luma') {
+      const mx = m.getContext('2d'), img = mx.getImageData(0, 0, W, H), d = img.data;
+      for (let i = 0; i < d.length; i += 4) { d[i + 3] = Math.round((d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722) * d[i + 3] / 255); }
+      mx.putImageData(img, 0, 0);
+    }
+    const c = this.mattec || (this.mattec = document.createElement('canvas')); this._size(c, W, H);
+    const x = c.getContext('2d'); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over'; x.clearRect(0, 0, W, H);
+    x.drawImage(src, 0, 0); x.globalCompositeOperation = invert ? 'destination-out' : 'destination-in'; x.drawImage(m, 0, 0); x.globalCompositeOperation = 'source-over';
+    return c;
+  }
   // render one layer by itself (no blend) into a pooled canvas: texture source for Displacement Map, Bump Map etc.
   _refLayer(id, t, s, W, H, project, depth) {
     const L = project.layers.find(l => l.id === id); if (!L || L.type === 'audio') return null;
@@ -396,7 +410,7 @@ export class Renderer {
         if (L.shadow?.on) { const sh = evalNs(L, 'shadow', tt), n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
         drawContent(c, L, project, evAt(tt));
       };
-      const simple = !useGL && !mb && !echo && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);
+      const simple = !useGL && !mb && !echo && !L.matte?.layer && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);
       if (simple) { ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); drawTo(ctx); ctx.restore(); return; }
       lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.globalAlpha = 1; lctx.globalCompositeOperation = 'source-over'; lctx.clearRect(0, 0, W, H);
       const sample = (tt, alpha, comp = 'source-over') => { // draw the layer at another time into lc
@@ -421,6 +435,7 @@ export class Renderer {
       }
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = Math.max(0, Math.min(1, tr.opacity)); ctx.globalCompositeOperation = op;
+      if (L.matte?.layer && depth < 2) src = this._matte(src, L, t, s, W, H, project, depth);
       ctx.drawImage(src, 0, 0); ctx.restore();
     } catch (e) { if (this.errors.length < 20) this.errors.push(String(e)); console.error(e); }
   }

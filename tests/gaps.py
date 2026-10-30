@@ -178,6 +178,21 @@ with sync_playwright() as pw:
       return { ok1, changed: shown !== hidden, faded: faded === hidden, groups, copies, freed }; }""")
     check('groups render their members, honour visibility / opacity, duplicate and ungroup', r == {'ok1': True, 'changed': True, 'faded': True, 'groups': 2, 'copies': 2, 'freed': True}, r)
 
+    # --- track matte masks ---
+    r = E("""async () => { const A = __app, R = await import('./js/render.js'), st = await import('./js/state.js');
+      const p = st.newProject('1:1', 'm', { bg: '#000000' }); p.w = p.h = 200;
+      const base = st.makeLayer(p, 'solid'); base.solid.color = '#ffffff';
+      const m = st.makeLayer(p, 'shape', { kind: 'rect' }); m.shape.w = 100; m.shape.h = 200; m.shape.radius = 0; m.props.x = 50; m.props.y = 100; m.visible = false; m.shape.fill = '#ffffff';
+      p.layers = [base, m]; base.matte = { layer: m.id };
+      const c = document.createElement('canvas'); c.width = c.height = 200; const r = new R.Renderer();
+      const at = x => { r.render(p, 0, c, { skipMediaSync: true }); return c.getContext('2d').getImageData(x, 100, 1, 1).data[0]; };
+      const a = [at(20), at(180)]; base.matte.invert = true; const b = [at(20), at(180)];
+      base.matte = { layer: m.id, mode: 'luma' }; m.shape.fill = '#000000'; const l = at(20);
+      return { a, b, l }; }""")
+    check('track matte: alpha keeps the inside, invert the outside, luma uses brightness', r == {'a': [255, 0], 'b': [0, 255], 'l': 0}, r)
+    E("() => { __app.selectLayer(__app.project.layers.find(l => l.type === 'shape').id); __app.openSub('blend'); }"); pg.wait_for_timeout(100)
+    check('Blending & Opacity has a Mask Layer picker', pg.locator('[data-testid=matte-layer]').count() == 1)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()
