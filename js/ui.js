@@ -35,11 +35,14 @@ export function slider({ label, value, min, max, step = 0.01, onInput, onChange,
   return row;
 }
 
-export function color({ label, value, onChange, onInput }) {
-  const inp = h('input', { type: 'color', value });
-  inp.addEventListener('input', () => onInput?.(inp.value));
+export function color({ label, value, onChange, onInput, key, testid }) {
+  const inp = h('input', { type: 'color', value, 'data-testid': testid });
+  const code = h('code', {}, value);
+  inp.addEventListener('input', () => { code.textContent = inp.value; onInput?.(inp.value); });
   inp.addEventListener('change', () => onChange?.(inp.value));
-  return h('div', { class: 'ctl ctl-color' }, h('label', {}, label), inp, h('code', {}, value));
+  const row = h('div', { class: 'ctl ctl-color' }, h('label', {}, label), inp, code);
+  if (key) row.append(h('button', { class: 'kd' + (key.state === 2 ? ' on' : key.state === 1 ? ' anim' : ''), title: 'Keyframe', 'data-testid': testid ? testid + '-key' : null, onclick: key.toggle }, h('span')));
+  return row;
 }
 
 export function toggle({ label, value, onChange, testid }) {
@@ -151,6 +154,8 @@ export const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   grid: '<rect x="4" y="4" width="4" height="4" fill="currentColor"/><rect x="10" y="4" width="4" height="4" fill="currentColor"/><rect x="16" y="4" width="4" height="4" fill="currentColor"/><rect x="4" y="10" width="4" height="4" fill="currentColor"/><rect x="10" y="10" width="4" height="4" fill="currentColor"/><rect x="16" y="10" width="4" height="4" fill="currentColor"/><rect x="4" y="16" width="4" height="4" fill="currentColor"/><rect x="10" y="16" width="4" height="4" fill="currentColor"/><rect x="16" y="16" width="4" height="4" fill="currentColor"/>',
   camera: '<rect x="3" y="7" width="13" height="10" rx="2"/><path d="M16 10.5l5-3v9l-5-3"/>',
+  eyedrop: '<path d="M14.5 4.5a2.1 2.1 0 0 1 3 0l2 2a2.1 2.1 0 0 1 0 3L17 12l-5-5Z"/><path d="m13 8-8 8v3h3l8-8"/>',
+  bookmark: '<path d="M7 4h10v16l-5-4-5 4Z"/>',
   group: '<rect x="5" y="5" width="14" height="14" stroke-dasharray="2 2"/><circle cx="5" cy="5" r="1.3" fill="currentColor"/><circle cx="19" cy="5" r="1.3" fill="currentColor"/><circle cx="5" cy="19" r="1.3" fill="currentColor"/><circle cx="19" cy="19" r="1.3" fill="currentColor"/>',
   nullobj: '<rect x="4.5" y="4.5" width="15" height="15"/><path d="M4.5 19.5 19.5 4.5"/>',
   element: '<path d="M9.5 4 16 15H3Z"/><circle cx="15" cy="15.5" r="5"/>',

@@ -379,7 +379,7 @@ def run(pw, label, ctx_opts, mobile):
         under: r.left < b.left && r.right > b.right - 30, fs: getComputedStyle(its[0]).fontSize, fsStretch: parseFloat(getComputedStyle(its[5]).fontSize), col: getComputedStyle(its[0]).color,
         hr: getComputedStyle(m.querySelector('.lm-hr')).backgroundColor, sw: m.querySelectorAll('.lm-sw').length, swOn: m.querySelector('.lm-sw.on')?.classList.contains('none'), dlg: document.getElementById('dlg').open,
         fits: its.every(s => s.scrollWidth <= s.clientWidth + 1) }; })()""")
-    want = ['Save to My Elements', 'Flip Horizontally', 'Flip Vertically', 'Fit Composition Area', 'Fill Composition Area', 'Stretch to Composition Area', 'Create Clipping Mask', 'Convert to Outline',
+    want = ['Save to My Elements', 'Flip Horizontally', 'Flip Vertically', 'Fit Composition Area', 'Fill Composition Area', 'Stretch to Composition Area', 'Create Clipping Mask', 'Convert to Outline', 'Parent to Layer…', 'Group Layer',
             'Center on Canvas', 'Hide Layer', 'Lock', 'Move Up', 'Move Down', 'Easing', 'Rename']
     check(f'[{label}] ⋯ opens a dropdown under the ⋯ button (not a modal): Alight items, swatches, then our extras', lm['labels'] == want and not lm['dlg'] and 0 <= lm['top'] <= 16 and lm['under'], lm)
     check(f'[{label}] ⋯ menu colours/fonts match the reference (slate #35374e, 17px white, dark dividers, auto-shrunk Stretch)', lm['bg'] == 'rgb(53, 55, 78)' and lm['fs'] == '17px' and lm['col'] == 'rgb(255, 255, 255)'
@@ -418,7 +418,7 @@ def run(pw, label, ctx_opts, mobile):
     out2 = pg.evaluate(PIX, [0.3, 0.5])
     check(f'[{label}] Create Clipping Mask: the layer only shows inside the layer below; Release restores', out0[2] > 200 and in0[2] > 200 and out1[:3] == [0, 0, 0] and in1[2] > 200 and in1[0] < 40 and clipped_row
           and rel == 'Release Clipping Mask' and out2[2] > 200, (out0, in0, out1, in1, clipped_row, rel, out2))
-    menu('save'); check(f'[{label}] Save to My Elements says coming soon', 'coming soon' in (P("[...document.querySelectorAll('.toast')].map(t => t.textContent).join('|')") or ''))
+    menu('save'); check(f'[{label}] Save to My Elements saves the layer', 'Saved to My Elements' in (P("[...document.querySelectorAll('.toast')].map(t => t.textContent).join('|')") or '') and len(P("JSON.parse(localStorage.getItem('kntc.elements') || '[]')")) >= 1)
     menu('hide'); h1 = P("__app.project.layers[0].visible"); menu('hide'); menu('down'); dn = P("__app.project.layers[1].id")
     menu('up'); up_ = P("__app.project.layers[0].id"); menu('lock'); lk = P("__app.project.layers[0].locked"); menu('lock')
     P("(() => { const L = __app.project.layers[0]; L.props.x = 100; __app.commit(); })()"); menu('center'); cx_ = P("__app.project.layers[0].props.x")

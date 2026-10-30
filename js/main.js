@@ -1,8 +1,8 @@
-import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, History, clone, uid } from './state.js';
+import { newProject, makeLayer, ASPECTS, RESOLUTIONS, sizeFor, ANIM_PROPS, XFORM_PROPS, XFORM3D_PROPS, PROP_META, valueAt, hasKeys, findKey, setKey, removeKey, writeProp, allKeys, shiftLayer, copyKeys, pasteKeys, setStart, setEnd, setSpeed, setReverse, mediaTime, History, clone, uid } from './state.js';
 import { EASE_PRESETS, makeEase, applyEase } from './easing.js';
 import { EFFECTS, makeEffect, migrateProject, migrateLayer, searchEffects, presetsFor, applyPreset } from './effects.js';
 import { initFxUI, panelFx, panelEase as fxPanelEase, easeTick, propLabel, renewFxIds, openBrowser, closeBrowser, openEaseFor, keyframesRequired, fxEaseTarget } from './fxui.js';
-import { Renderer, BLEND_MODES, FONTS, media, evalTransform, evalShape, layerBounds, syncVideos, shapePoints, brushWidth } from './render.js';
+import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalShape, layerBounds, syncVideos, mediaGain, shapePoints, pathSample, brushWidth } from './render.js';
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
@@ -67,9 +67,52 @@ async function registerMedia(id, blob, type) {
     el.addEventListener('seeked', () => { if (!S.playing) drawFrame(); });
   }
   media.set(id, { type, el, url });
+  if (type !== 'image') computePeaks(id, blob);
   return el;
 }
-async function hydrateMedia(project) {
+// waveform peaks (max |sample| per 1/100 s, first channel) for audio and video clips; no sound track -> none
+async function computePeaks(id, blob) {
+  try {
+    const ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 2, 44100);
+    const buf = await ac.decodeAudioData(await blob.arrayBuffer()), d = buf.getChannelData(0);
+    const per = Math.max(1, Math.floor(buf.sampleRate / 100)), n = Math.ceil(d.length / per), pk = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let m = 0; for (let j = i * per, e = Math.min(d.length, j + per); j < e; j++) { const a = Math.abs(d[j]); if (a > m) m = a; } pk[i] = m; }
+    const e = media.get(id); if (!e) return;
+    e.peaks = pk; renderTimeline();
+  } catch { /* no decodable audio */ }
+}
+// the clip's slice of the source waveform, scaled by the volume / fades
+function waveCanvas(L, peaks) {
+  const w = Math.max(4, Math.min(4096, Math.round((L.end - L.start) * S.pps))), H = 26, c = h('canvas', { class: 'wave', width: w, height: H, 'data-testid': 'wave' });
+  const g = c.getContext('2d'); g.fillStyle = 'rgba(255,255,255,.55)';
+  for (let x = 0; x < w; x++) {
+    const t = L.start + x / S.pps, i = Math.floor(mediaTime(L, t) * 100);
+    const a = (peaks[i] || 0) * mediaGain(L, t) * (H - 2);
+    if (a > 0.3) g.fillRect(x, (H - a) / 2, 1, a);
+  }
+  return c;
+}
+// ---- imported fonts (TTF / OTF / WOFF / WOFF2): kept with the media in IndexedDB, listed in project.fonts ----
+async function registerFont(id, blob) {
+  if (document.fonts && [...document.fonts].some(f => f.family === 'kf_' + id)) return;
+  const face = new FontFace('kf_' + id, await blob.arrayBuffer()); await face.load(); document.fonts.add(face);
+}
+function pickFont(L) {
+  const inp = h('input', { type: 'file', accept: '.ttf,.otf,.woff,.woff2,font/*', 'data-testid': 'font-file' });
+  inp.onchange = () => inp.files[0] && importFont(inp.files[0], L);
+  document.body.append(inp); inp.click(); setTimeout(() => inp.remove(), 60000);
+}
+async function importFont(file, L) {
+  const id = uid(), name = file.name.replace(/\.[^.]+$/, '').slice(0, 32);
+  try { await registerFont(id, file); } catch (e) { return toast('That font file could not be read'); }
+  await store.putMedia(id, file);
+  (P().fonts || (P().fonts = [])).push({ id, name });
+  if (L?.type === 'text') L.text.font = 'f:' + id;
+  commit(); toast('Font added: ' + name);
+}
+async function hydrateMedia(project, depth = 0) {
+  if (depth < 3) for (const L of project.layers) if (L.type === 'comp') { const sub = store.loadProject(L.comp.id); if (sub) await hydrateMedia(sub, depth + 1); }
+  for (const f of project.fonts || []) { try { const b = await store.getMedia(f.id); if (b) await registerFont(f.id, b); } catch (e) { console.warn(e); } }
   let any = false;
   for (const L of project.layers) {
     if ((L.type === 'image' || L.type === 'video' || L.type === 'audio') && !media.has(L.media.id)) {
@@ -137,12 +180,92 @@ function openSub(id) {
 }
 function duplicateLayer(L) {
   if (!L) return toast('Select a layer to duplicate');
-  const ix = P().layers.indexOf(L);
+  const ls = P().layers, ix = ls.indexOf(L);
   const c = clone(L); c.id = uid(); c.name = L.name + ' copy'; for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
-  P().layers.splice(ix, 0, c); S.sel = c.id; commit();
+  // a group copies its members too, re-pointed at the new group
+  const kids = L.type === 'group' ? ls.filter(m => m.group === L.id).map(m => { const k = clone(m); k.id = uid(); k.group = c.id; if (k.parent === L.id) k.parent = c.id;
+    for (const p in k.keys) k.keys[p].forEach(q => (q.id = uid())); renewFxIds(k); return k; }) : [];
+  ls.splice(ix, 0, c, ...kids); S.sel = c.id; commit();
 }
 function deleteLayer(L) {
-  if (!L) return; P().layers.splice(P().layers.indexOf(L), 1); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+  if (!L) return;
+  const ls = P().layers, gone = new Set([L.id, ...descendants(L).filter(m => m.group).map(m => m.id)]);
+  for (const m of ls) if (!gone.has(m.id) && gone.has(m.parent)) reparent(m, null); // children keep their place on screen
+  P().layers = ls.filter(m => !gone.has(m.id)); S.sel = null; S.selKeys.clear(); S.tab = null; commit();
+}
+// ---- My Elements: layers (with their group members / children) saved for reuse in any project ----
+const myElements = () => { try { return JSON.parse(localStorage.getItem('kntc.elements')) || []; } catch { return []; } };
+function saveElement(L) {
+  const layers = [L, ...descendants(L)].map(clone), els = myElements();
+  els.unshift({ id: uid(), name: L.name, created: Date.now(), layers });
+  try { localStorage.setItem('kntc.elements', JSON.stringify(els.slice(0, 60))); toast('Saved to My Elements'); } catch { toast('Storage is full'); }
+}
+// fresh ids throughout, internal parent / group links re-pointed, starting at the playhead
+function insertElement(el) {
+  const map = new Map(el.layers.map(l => [l.id, uid()])), t0 = Math.min(...el.layers.map(l => l.start)), dt = snapT(S.t) - t0;
+  const made = el.layers.map(l => { const c = clone(l); c.id = map.get(l.id); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
+    if (c.parent) c.parent = map.get(c.parent) || undefined; if (c.group) c.group = map.get(c.group) || undefined; if (!c.parent) delete c.parent; if (!c.group) delete c.group;
+    shiftLayer(c, dt); return c; });
+  P().layers.unshift(...made); S.sel = made[0].id; S.multi.clear(); S.tab = null; commit(); toast('Added ' + el.name);
+}
+function openElements() {
+  const els = myElements(), projs = store.listProjects().filter(x => x.id !== P().id);
+  const row = (label, sub, fn, tid, del) => h('div', { class: 'el-row' }, h('button', { class: 'act wide', 'data-testid': tid, onclick: fn }, h('b', {}, label), h('em', {}, sub)), del || null);
+  openDialog('Element / Project', h('div', { class: 'plist', 'data-testid': 'elements' },
+    h('div', { class: 'sec-h' }, 'My Elements'),
+    els.length ? null : h('div', { class: 'hint' }, 'Save a layer or group with ⋯ › Save to My Elements to reuse it here.'),
+    ...els.map(el => row(el.name, `${el.layers.length} layer${el.layers.length > 1 ? 's' : ''}`, () => { dlg.close(); insertElement(el); }, 'el-' + el.id,
+      h('button', { class: 'mini', title: 'Delete', onclick: () => { localStorage.setItem('kntc.elements', JSON.stringify(myElements().filter(x => x.id !== el.id))); openElements(); } }, icon('trash')))),
+    h('div', { class: 'sec-h' }, 'Projects (placed as a nested element)'),
+    projs.length ? null : h('div', { class: 'hint' }, 'Other projects show up here.'),
+    ...projs.map(x => row(x.name, `${x.aspect} · ${x.layers} layers`, () => { dlg.close(); addComp(x.id); }, 'comp-' + x.id))));
+}
+async function addComp(id) {
+  const sub = store.loadProject(id); if (!sub) return toast('Project not found');
+  await hydrateMedia(sub, 1);
+  addLayer(makeLayer(P(), 'comp', { compId: id, name: sub.name, w: sub.w, h: sub.h, duration: sub.duration }));
+}
+// ---- parenting & groups ----
+const layerById = id => id ? P().layers.find(l => l.id === id) : null;
+// every layer whose parent / group chain leads to L
+function descendants(L) {
+  const out = [], walk = id => { for (const m of P().layers) if ((m.parent === id || m.group === id) && !out.includes(m)) { out.push(m); walk(m.id); } };
+  walk(L.id); return out;
+}
+// change a layer's parent without moving it on screen (at the playhead): its position / rotation / scale (and their keys)
+// are re-expressed in the new parent's space
+function reparent(L, pid) {
+  const mOf = id => { const q = layerById(id); return q ? layerMatrix(q, S.t, P(), false) : new DOMMatrix(); };
+  const Q = mOf(pid).inverse().multiply(mOf(L.parent)), ang = Math.atan2(Q.b, Q.a) * 180 / Math.PI, sc = Math.hypot(Q.a, Q.b) || 1;
+  const xAt = t => valueAt(L, 'x', t), yAt = t => valueAt(L, 'y', t);
+  const pos = t => { const q = Q.transformPoint({ x: xAt(t), y: yAt(t) }); return [+q.x.toFixed(2), +q.y.toFixed(2)]; };
+  const nx = (L.keys.x || []).map(k => pos(k.t)[0]), ny = (L.keys.y || []).map(k => pos(k.t)[1]), base = pos(S.t);
+  (L.keys.x || []).forEach((k, i) => (k.v = nx[i])); (L.keys.y || []).forEach((k, i) => (k.v = ny[i]));
+  if (!hasKeys(L, 'x')) L.props.x = base[0]; if (!hasKeys(L, 'y')) L.props.y = base[1];
+  if (hasKeys(L, 'rotation')) L.keys.rotation.forEach(k => (k.v = +(k.v + ang).toFixed(2))); else L.props.rotation = +(L.props.rotation + ang).toFixed(2);
+  if (hasKeys(L, 'scale')) L.keys.scale.forEach(k => (k.v = +(k.v * sc).toFixed(4))); else L.props.scale = +(L.props.scale * sc).toFixed(4);
+  if (pid) L.parent = pid; else delete L.parent;
+}
+function canParent(L, P_) { return P_ && P_ !== L && P_.type !== 'audio' && !descendants(L).includes(P_); }
+function pickParent(L) {
+  const opts = P().layers.filter(o => canParent(L, o));
+  if (!opts.length) return toast('No layer to parent to');
+  openDialog('Parent to Layer', h('div', { class: 'plist', 'data-testid': 'parent-list' }, ...opts.map(o =>
+    h('button', { class: 'act wide', 'data-testid': 'parent-' + o.id, onclick: () => { reparent(L, o.id); dlg.close(); commit(); toast(`${L.name} follows ${o.name}`); } }, icon(TYPE_ICON[o.type] || 'layer'), o.name))));
+}
+// group the given layers (top first): a new group sits where the topmost was, members follow right below it
+function groupLayers(list) {
+  const ls = P().layers; list = ls.filter(l => list.includes(l) && l.type !== 'group' && !l.group);
+  if (!list.length) return toast('Select layers to group');
+  const g = makeLayer(P(), 'group'); g.start = Math.min(...list.map(l => l.start)); g.end = Math.max(...list.map(l => l.end));
+  const at = ls.indexOf(list[0]);
+  P().layers = ls.filter(l => !list.includes(l)); P().layers.splice(Math.min(at, P().layers.length), 0, g, ...list);
+  for (const m of list) { if (!m.parent) reparent(m, g.id); m.group = g.id; }
+  S.sel = g.id; S.multi.clear(); commit(); toast(`Grouped ${list.length} layer${list.length > 1 ? 's' : ''}`);
+}
+function ungroup(g) {
+  for (const m of P().layers) if (m.group === g.id) { delete m.group; if (m.parent === g.id) reparent(m, null); }
+  P().layers = P().layers.filter(l => l !== g); S.sel = null; commit(); toast('Ungrouped');
 }
 function moveLayer(L, d) {
   const ls = P().layers, ix = ls.indexOf(L), j = ix + d; if (j < 0 || j >= ls.length) return;
@@ -151,11 +274,11 @@ function moveLayer(L, d) {
 function splitAt(L, how) {
   const t = snapT(S.t);
   if (!(t > L.start + 1e-3 && t < L.end - 1e-3)) return toast('Move the playhead over the clip first');
-  if (how === 'start') L.start = t;
-  else if (how === 'end') L.end = t;
+  if (how === 'start') setStart(L, t);
+  else if (how === 'end') setEnd(L, t);
   else {
     const c = clone(L); c.id = uid(); for (const p in c.keys) c.keys[p].forEach(k => (k.id = uid())); renewFxIds(c);
-    c.start = t; L.end = t; P().layers.splice(P().layers.indexOf(L), 0, c);
+    setStart(c, t); setEnd(L, t); P().layers.splice(P().layers.indexOf(L), 0, c);
   }
   commit();
 }
@@ -278,15 +401,21 @@ function drawFrame() {
   easeTick();
 }
 
+// composition coords -> the space a layer's x / y live in (its parent's local space, or the composition)
+function parentInverse(L) {
+  const par = L.parent && P().layers.find(l => l.id === L.parent);
+  return par ? layerMatrix(par, S.t, P(), false).inverse() : new DOMMatrix();
+}
+// where the layer's pivot sits on the stage (rotation / pinch centre)
+function pivotWorld(L) { return toWorld(L, valueAt(L, 'anchorX', S.t), valueAt(L, 'anchorY', S.t)); }
 function toLocal(L, px, py) {
-  const tr = evalTransform(L, S.t), a = -tr.rotation * Math.PI / 180, dx = px - tr.x, dy = py - tr.y, s = tr.scale || 1e-6;
-  return [(dx * Math.cos(a) - dy * Math.sin(a)) / s * (L.flipX ? -1 : 1), (dx * Math.sin(a) + dy * Math.cos(a)) / s * (L.flipY ? -1 : 1)];
+  const q = layerMatrix(L, S.t, P()).inverse().transformPoint({ x: px, y: py });
+  return [q.x, q.y];
 }
 // local (content) -> stage coords; flip=false for the selection box/handles (symmetric, so the knob stays on top)
 function toWorld(L, lx, ly, flip = true) {
-  const tr = evalTransform(L, S.t), a = tr.rotation * Math.PI / 180;
-  if (flip) { if (L.flipX) lx = -lx; if (L.flipY) ly = -ly; }
-  return [tr.x + (lx * Math.cos(a) - ly * Math.sin(a)) * tr.scale, tr.y + (lx * Math.sin(a) + ly * Math.cos(a)) * tr.scale];
+  const q = layerMatrix(L, S.t, P(), flip).transformPoint({ x: lx, y: ly });
+  return [q.x, q.y];
 }
 function layerCorners(L) {
   const tr = evalTransform(L, S.t), b = layerBounds(L, P(), view.getContext('2d'));
@@ -306,10 +435,18 @@ function drawOverlay() {
   ctx.setTransform(k, 0, 0, k, 0, 0);
   const dot = (x, y, r = 5) => { ctx.beginPath(); ctx.arc(x, y, r / k * dpr, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); };
   if (S.tab === 'points' && L.type === 'shape' && L.shape.kind === 'path') {
-    const pts = (L.shape.pts || []).map(p => toWorld(L, p[0], p[1]));
+    const line = pathSample(L.shape.pts || [], L.shape.closed !== false, 24).map(p => toWorld(L, p[0], p[1]));
+    const pts = (L.shape.pts || []).map(p => toWorld(L, p[0], p[1])), cur = S.ptSel ?? pts.length - 1;
     ctx.lineWidth = 1.5 / k * dpr; ctx.strokeStyle = '#fff';
-    if (pts.length > 1) { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (L.shape.closed !== false) ctx.closePath(); ctx.stroke(); }
-    pts.forEach((p, i) => { const s = (i === pts.length - 1 ? 7 : 5) / k * dpr; ctx.fillStyle = i === pts.length - 1 ? ACCENT : '#fff'; ctx.fillRect(p[0] - s, p[1] - s, s * 2, s * 2); });
+    if (line.length > 1) { ctx.beginPath(); line.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (L.shape.closed !== false) ctx.closePath(); ctx.stroke(); }
+    // bezier handles of the selected smooth point
+    const sp = L.shape.pts?.[cur];
+    if (sp && sp.length > 2) for (const q of ptHandles(L, cur)) {
+      ctx.strokeStyle = ACCENT; ctx.beginPath(); ctx.moveTo(...pts[cur]); ctx.lineTo(...q); ctx.stroke();
+      ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(q[0], q[1], 6 / k * dpr, 0, 7); ctx.fill();
+    }
+    pts.forEach((p, i) => { const s = (i === cur ? 7 : 5) / k * dpr, smooth = L.shape.pts[i].length > 2; ctx.fillStyle = i === cur ? ACCENT : '#fff';
+      if (smooth) { ctx.beginPath(); ctx.arc(p[0], p[1], s * 1.1, 0, 7); ctx.fill(); } else ctx.fillRect(p[0] - s, p[1] - s, s * 2, s * 2); });
     const c = S.cursor || [P().w / 2, P().h / 2], g = 4 / k * dpr, l = 9 / k * dpr;
     ctx.strokeStyle = '#111'; ctx.lineWidth = 1.2 / k * dpr; ctx.beginPath();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(c[0] + dx * g, c[1] + dy * g); ctx.lineTo(c[0] + dx * l, c[1] + dy * l); }
@@ -346,12 +483,13 @@ function drawGuides(ctx, k, dpr) {
 // world-space AABB of a layer (optionally with its centre moved to cx, cy)
 function layerAABB(L) {
   const g = layerCorners(L), xs = g.corners.map(q => q[0]), ys = g.corners.map(q => q[1]);
-  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys), cx: g.tr.x, cy: g.tr.y };
+  const c = pivotWorld(L);
+  return { l: Math.min(...xs), r: Math.max(...xs), t: Math.min(...ys), b: Math.max(...ys), cx: c[0], cy: c[1] };
 }
 // magnetic snapping: returns the snapped centre and the guides to draw
 function snapMove(L, nx, ny) {
   const p = P(), box = layerAABB(L), thr = 8 / viewScale;
-  const offX = [box.l - box.cx, 0, box.r - box.cx], offY = [box.t - box.cy, 0, box.b - box.cy];
+  const offX = [box.l - box.cx, (box.l + box.r) / 2 - box.cx, box.r - box.cx], offY = [box.t - box.cy, (box.t + box.b) / 2 - box.cy, box.b - box.cy];
   const tx = [0, p.w / 2, p.w], ty = [0, p.h / 2, p.h];
   for (const o of p.layers) {
     if (o === L || !o.visible || !visualLayer(o) || o.type === 'solid' || S.t < o.start || S.t >= o.end) continue;
@@ -368,19 +506,19 @@ const HANDLES = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-
 function dimsOf(L) {
   if (L.type === 'shape' && L.shape.kind !== 'path') return { get: () => [valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)], set: (w, h) => { writeProp(L, 'shape.w', S.t, w); writeProp(L, 'shape.h', S.t, h); } };
   if (L.type === 'shape') { const p0 = L.shape.pts.map(q => q.slice()), b = layerBounds(L, P(), null);
-    return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1)]); } }; }
+    return { get: () => [b.w, b.h], set: (w, h) => { const fx = w / b.w, fy = h / b.h; L.shape.pts = p0.map(([x, y, hx, hy]) => [+(x * fx).toFixed(1), +(y * fy).toFixed(1), ...(hx != null ? [+(hx * fx).toFixed(1), +(hy * fy).toFixed(1)] : [])]); } }; }
   if (L.type === 'image' || L.type === 'video') return { get: () => [L.media.w, L.media.h], set: (w, h) => { L.media.w = w; L.media.h = h; } };
   return null; // text / solid / drawing: one uniform scale
 }
 function startHandle(L, hi, px, py) {
-  const g = layerCorners(L), tr = g.tr, d = dimsOf(L), [w0, h0] = d ? d.get() : [g.b.w, g.b.h];
-  return { mode: 'handle', L, hi, sx: HANDLES[hi][0], sy: HANDLES[hi][1], x0: tr.x, y0: tr.y, s0: valueAt(L, 'scale', S.t), rot: tr.rotation * Math.PI / 180, w0, h0, dims: d, bw: g.b.w, bh: g.b.h,
-    p0: handleLocal(tr.x, tr.y, tr.rotation * Math.PI / 180, valueAt(L, 'scale', S.t), px, py), moved: false };
+  const g = layerCorners(L), tr = g.tr, d = dimsOf(L), [w0, h0] = d ? d.get() : [g.b.w, g.b.h], m0 = layerMatrix(L, S.t, P(), false), inv = m0.inverse();
+  return { mode: 'handle', L, hi, sx: HANDLES[hi][0], sy: HANDLES[hi][1], x0: tr.x, y0: tr.y, s0: valueAt(L, 'scale', S.t), m0, inv, w0, h0, dims: d, bw: g.b.w, bh: g.b.h,
+    p0: handleLocal(inv, px, py), moved: false };
 }
 // pointer -> local units of the box at the start of the drag (unflipped, unscaled content units)
-function handleLocal(x0, y0, rot, s, px, py) { const dx = px - x0, dy = py - y0, c = Math.cos(-rot), sn = Math.sin(-rot); return [(dx * c - dy * sn) / s, (dx * sn + dy * c) / s]; }
+function handleLocal(inv, px, py) { const q = inv.transformPoint({ x: px, y: py }); return [q.x, q.y]; }
 function moveHandle(g, px, py) {
-  const { L, sx, sy, s0, rot } = g, [lx, ly] = handleLocal(g.x0, g.y0, rot, s0, px, py), mode = S.sizeMode;
+  const { L, sx, sy, s0 } = g, [lx, ly] = handleLocal(g.inv, px, py), mode = S.sizeMode;
   const fromEdge = mode !== 'center', corner = sx && sy, hw = g.bw / 2, hh = g.bh / 2;
   // anchor (local): the centre, or the opposite corner / edge
   const ax = fromEdge ? -sx * hw : 0, ay = fromEdge ? -sy * hh : 0;
@@ -400,8 +538,11 @@ function moveHandle(g, px, py) {
     if (g.dims) g.dims.set(g.w0, g.h0);
     writeProp(L, 'scale', S.t, +Math.max(0.01, s0 * fx).toFixed(4)); cxl = ax * (1 - fx); cyl = ay * (1 - fy);
   }
-  const c = Math.cos(rot), sn = Math.sin(rot), wx = (cxl * c - cyl * sn) * s0, wy = (cxl * sn + cyl * c) * s0;
-  writeProp(L, 'x', S.t, +(g.x0 + wx).toFixed(2)); writeProp(L, 'y', S.t, +(g.y0 + wy).toFixed(2));
+  // move the layer so the box centre lands where it should (works with any pivot, skew or parent)
+  writeProp(L, 'x', S.t, g.x0); writeProp(L, 'y', S.t, g.y0);
+  const want = g.m0.transformPoint({ x: cxl, y: cyl }), cur = layerMatrix(L, S.t, P(), false).transformPoint({ x: 0, y: 0 });
+  const toPar = parentInverse(L), a = toPar.transformPoint(want), b = toPar.transformPoint(cur); // x / y live in the parent's space
+  writeProp(L, 'x', S.t, +(g.x0 + a.x - b.x).toFixed(2)); writeProp(L, 'y', S.t, +(g.y0 + a.y - b.y).toFixed(2));
   g.moved = true;
 }
 function setSizeMode(m) {
@@ -448,6 +589,7 @@ stage.addEventListener('pointerdown', e => {
   if (!P()) return;
   stage.setPointerCapture(e.pointerId);
   const [px, py] = stagePoint(e); ptrs.set(e.pointerId, [px, py]);
+  if (S.pick) { const set = S.pick; S.pick = null; stage.classList.remove('picking'); ptrs.delete(e.pointerId); set(samplePreview(px, py)); return; }
   if (S.playing) togglePlay(false);
   const L = selLayer();
   if (S.picking) { // eyedropper
@@ -457,16 +599,18 @@ stage.addEventListener('pointerdown', e => {
   }
   if (S.tab === 'draw' && L?.type === 'draw') {
     if (ptrs.size > 1) { if (gesture?.mode === 'stroke') { L.draw.strokes.pop(); drawFrame(); } gesture = null; return; }
-    if (S.draw.tool === 'smudge') { toast('Smudge: coming soon'); return; }
     const st = { tool: S.draw.tool, color: S.draw.color, size: S.draw.size, pts: [toLocal(L, px, py).map(v => +v.toFixed(1))] };
     L.draw.strokes.push(st); gesture = { mode: 'stroke', L, st }; drawFrame(); return;
   }
   if (S.tab === 'points' && L?.type === 'shape' && L.shape.kind === 'path') {
     if (ptrs.size > 1) return;
-    const pts = L.shape.pts, tol = 22 / viewScale;
+    const pts = L.shape.pts, tol = 22 / viewScale, cur = S.ptSel ?? pts.length - 1;
+    // the selected smooth point's handle dots come first
+    if (pts[cur]?.length > 2) { const hs = ptHandles(L, cur), j = hs.findIndex(q => Math.hypot(q[0] - px, q[1] - py) < tol);
+      if (j >= 0) { gesture = { mode: 'pthandle', L, i: cur, sign: j ? -1 : 1, moved: false }; return; } }
     const i = pts.findIndex(p => { const w = toWorld(L, p[0], p[1]); return Math.hypot(w[0] - px, w[1] - py) < tol; });
-    if (i >= 0) gesture = { mode: 'point', L, i, moved: false };
-    else { S.cursor = [px, py]; pts.push(toLocal(L, px, py).map(v => +v.toFixed(1))); gesture = { mode: 'point', L, i: pts.length - 1, moved: true }; }
+    if (i >= 0) { S.ptSel = i; const sm = S.curve && pts[i].length <= 2; if (sm) smoothPoint(L, i); gesture = { mode: 'point', L, i, moved: sm }; }
+    else { S.cursor = [px, py]; pts.push(toLocal(L, px, py).map(v => +v.toFixed(1))); S.ptSel = pts.length - 1; if (S.curve) smoothPoint(L, S.ptSel); gesture = { mode: 'point', L, i: pts.length - 1, moved: true }; }
     drawFrame(); renderPanel(); return;
   }
   if (S.tab === 'points' || S.tab === 'draw') return;
@@ -478,7 +622,7 @@ stage.addEventListener('pointerdown', e => {
   if (ptrs.size > 1) { if (gesture?.mode === 'tap') gesture = null; return; }
   if (L && L.type !== 'adjust' && L.type !== 'audio' && S.t >= L.start && S.t < L.end) {
     const g = layerCorners(L), tol = 22 / viewScale;
-    if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: Math.atan2(py - g.tr.y, px - g.tr.x) }; return; }
+    if (Math.hypot(px - g.rotH[0], py - g.rotH[1]) < tol) { gesture = { mode: 'rotate', L, r0: valueAt(L, 'rotation', S.t), a0: (c => Math.atan2(py - c[1], px - c[0]))(pivotWorld(L)) }; return; }
     const hs = [...g.corners, ...g.mids], hi = hs.map((q, i) => [Math.hypot(px - q[0], py - q[1]), i]).filter(([d]) => d < tol).sort((a, b) => a[0] - b[0])[0];
     if (hi) { gesture = startHandle(L, hi[1], px, py); return; }
   }
@@ -501,19 +645,24 @@ stage.addEventListener('pointermove', e => {
     if (Math.hypot(lp[0] - last[0], lp[1] - last[1]) > 2 / viewScale) { gesture.st.pts.push(lp.map(v => +v.toFixed(1))); drawFrame(); }
     return;
   }
-  if (gesture.mode === 'point') { L.shape.pts[gesture.i] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
+  if (gesture.mode === 'pthandle') { const p = L.shape.pts[gesture.i], q = toLocal(L, px, py); p[2] = +((q[0] - p[0]) * gesture.sign).toFixed(1); p[3] = +((q[1] - p[1]) * gesture.sign).toFixed(1); gesture.moved = true; drawFrame(); return; }
+  if (gesture.mode === 'point') { const p = L.shape.pts[gesture.i]; [p[0], p[1]] = toLocal(L, px, py).map(v => +v.toFixed(1)); S.cursor = [px, py]; gesture.moved = true; drawFrame(); updateCursorBoxes(); return; }
   if (gesture.mode === 'move') {
     if (!gesture.moved && Math.hypot(px - gesture.px, py - gesture.py) * viewScale < 2) return;
-    const sn = snapMove(L, gesture.x0 + px - gesture.px, gesture.y0 + py - gesture.py);
+    let sn;
+    if (L.parent) { // x / y are in the parent's space: map the drag through it (no snapping)
+      const m = parentInverse(L), a = m.transformPoint({ x: px, y: py }), b = m.transformPoint({ x: gesture.px, y: gesture.py });
+      sn = { nx: gesture.x0 + a.x - b.x, ny: gesture.y0 + a.y - b.y, guides: [] };
+    } else sn = snapMove(L, gesture.x0 + px - gesture.px, gesture.y0 + py - gesture.py);
     S.guides = sn.guides;
     writeProp(L, 'x', S.t, +sn.nx.toFixed(2)); writeProp(L, 'y', S.t, +sn.ny.toFixed(2)); gesture.moved = true;
   } else if (gesture.mode === 'handle') { moveHandle(gesture, px, py);
   } else if (gesture.mode === 'rotate') {
-    const tr = evalTransform(L, S.t), a = Math.atan2(py - tr.y, px - tr.x);
+    const c = pivotWorld(L), a = Math.atan2(py - c[1], px - c[0]);
     let r = gesture.r0 + (a - gesture.a0) * 180 / Math.PI; if (e.shiftKey) r = Math.round(r / 15) * 15;
     writeProp(L, 'rotation', S.t, +r.toFixed(1)); gesture.moved = true;
   } else if (gesture.mode === 'scale') {
-    const tr = evalTransform(L, S.t), d = Math.hypot(px - tr.x, py - tr.y);
+    const c = pivotWorld(L), d = Math.hypot(px - c[0], py - c[1]);
     writeProp(L, 'scale', S.t, +Math.max(0.01, gesture.s0 * d / (gesture.d0 || 1)).toFixed(3)); gesture.moved = true;
   } else if (gesture.mode === 'pinch' && ptrs.size === 2) {
     const [a, b] = [...ptrs.values()];
@@ -579,7 +728,7 @@ function jumpKey(dir) {
   if (t == null) return toast(dir < 0 ? 'No earlier keyframe' : 'No later keyframe');
   seek(t); updateTransport();
 }
-const SUB_TITLE = { layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing Curve', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
+const SUB_TITLE = { speed: 'Speed', layer: 'Move & Transform', style: 'Color & Fill', border: 'Border & Shadow', fx: 'Effects', blend: 'Blending & Opacity', ease: 'Easing Curve', presets: 'Presets', project: 'Project Settings', points: 'Edit Points', draw: 'Drawing' };
 const EDIT_TITLE = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', shape: 'Edit Shape' };
 function updateHeader() {
   const p = P(), L = selLayer();
@@ -719,7 +868,7 @@ function stripThumb(L) {
   THUMB.cache.set(key, url);
   return url;
 }
-const TYPE_ICON = { shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio' };
+const TYPE_ICON = { camera: 'camera', comp: 'element', shape: 'shapes', text: 'text', solid: 'solid', image: 'image', video: 'media', adjust: 'adjust', draw: 'freehand', audio: 'audio', group: 'group', null: 'nullobj' };
 function renderTimeline() {
   const p = P(); if (!p) return;
   const ox = tlOriginX();
@@ -736,19 +885,35 @@ function renderTimeline() {
   addTicks(ruler, 0, G.extT);
   const endH = h('div', { class: 'tl-end-h', id: 'tlEndH', 'data-testid': 'end-marker', title: 'Drag to change the project duration' }, h('span', {}, 'END'));
   bindEnd(endH); ruler.append(endH);
+  for (const m of p.markers || []) {
+    const f = h('i', { class: 'tl-mark', style: { left: m.t * S.pps + 'px', '--mc': m.color || '#f7cc4a' }, title: 'Marker ' + tc(m.t) + ' (double-tap to remove)', 'data-testid': 'marker' });
+    f.addEventListener('pointerdown', e => e.stopPropagation());
+    f.addEventListener('click', e => { e.stopPropagation(); seek(m.t); });
+    f.addEventListener('dblclick', e => { e.stopPropagation(); p.markers = p.markers.filter(x => x !== m); commit(); });
+    ruler.append(f);
+  }
   inner.append(h('div', { class: 'tl-head' }, ruler));
   bindScrub(ruler);
+  const depthOf = L => { let d = 0, g = L.group; while (g && d < 8) { d++; g = p.layers.find(l => l.id === g)?.group; } return d; };
+  const folded = L => { let g = L.group, n = 0; while (g && n++ < 8) { const G = p.layers.find(l => l.id === g); if (!G) return false; if (G.collapsed) return true; g = G.group; } return false; };
   for (const L of p.layers) {
-    const sel = L.id === S.sel, msel = S.multi.has(L.id), th = pillThumb(L), isMedia = L.type === 'image' || L.type === 'video';
-    const label = h('div', { class: 'tl-label', onclick: () => selectLayer(L.id) },
+    if (folded(L)) continue;
+    const sel = L.id === S.sel, msel = S.multi.has(L.id), th = pillThumb(L), isMedia = L.type === 'image' || L.type === 'video', dep = depthOf(L);
+    // shift / ⌘ click adds a layer to the multi-selection (Group, Duplicate, Copy act on all of them)
+    const label = h('div', { class: 'tl-label' + (dep ? ' ingroup' : ''), style: dep ? { '--dep': dep } : {}, onclick: ev => {
+        if ((ev.shiftKey || ev.metaKey) && S.sel) { if (!S.multi.size) S.multi.add(S.sel); S.multi.has(L.id) ? S.multi.delete(L.id) : S.multi.add(L.id); renderTimeline(); return; }
+        selectLayer(L.id); } },
       h('button', { class: 'vis' + (L.visible ? '' : ' off'), title: 'Visibility', 'data-testid': 'vis', onclick: ev => { ev.stopPropagation(); L.visible = !L.visible; commit(); } }, icon(L.visible ? 'eye' : 'eyeoff')),
-      th ? h('img', { class: 'th' + (isMedia ? ' m' : ''), src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
+      L.type === 'group' ? h('button', { class: 'fold' + (L.collapsed ? ' shut' : ''), title: L.collapsed ? 'Expand group' : 'Collapse group', 'data-testid': 'fold', onclick: ev => { ev.stopPropagation(); L.collapsed = !L.collapsed; commit(); } }, icon('chevl'))
+        : th ? h('img', { class: 'th' + (isMedia ? ' m' : ''), src: th, alt: '' }) : icon(TYPE_ICON[L.type] || 'layer', 'th ti'));
     const track = h('div', { class: 'tl-track' });
     const st = isMedia ? stripThumb(L) : null, strip = st ? { backgroundImage: `url(${st})` } : {};
     const tag = L.tag ? { '--tag': L.tag } : {};
     const clip = h('div', { class: 'clip t-' + L.type + (sel ? ' sel' : '') + (msel ? ' msel' : '') + (L.visible ? '' : ' hidden') + (strip.backgroundImage ? ' strip' : '') + (L.tag ? ' tagged' + (isLight(L.tag) ? ' lt' : '') : ''),
       'data-tag': L.tag || null, style: { left: L.start * S.pps + 'px', width: Math.max(4, (L.end - L.start) * S.pps) + 'px', ...strip, ...tag } },
       h('b', { class: 'trim l' }), h('span', { class: 'cn' }, strip.backgroundImage ? '' : L.name), h('b', { class: 'trim r' }));
+    const pk = L.media && media.get(L.media.id)?.peaks;
+    if (pk && (L.type === 'audio' || L.type === 'video')) clip.prepend(waveCanvas(L, pk));
     bindClip(clip, L);
     track.append(clip);
     // merged keyframe diamonds (one per time); in Effects, only the selected parameter's diamonds are lit
@@ -1044,11 +1209,11 @@ function lockPage() {
 const snapT = t => { const f = P().fps; return Math.round(t * f) / f; };
 function bindClip(clip, L) {
   bindDrag(clip, {
-    onStart: e => ({ mode: e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm', s0: L.start, e0: L.end, snap: clone(L.keys) }),
+    onStart: e => ({ mode: e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'm', s0: L.start, e0: L.end, o0: L.media?.offset, snap: clone(L.keys) }),
     onMove: (dt, c) => {
       // start never goes below 0; the end may run past the project duration (not rendered there, like Alight)
-      if (c.mode === 'l') L.start = Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)));
-      else if (c.mode === 'r') L.end = Math.max(L.start + 0.05, snapT(c.e0 + dt));
+      if (c.mode === 'l') { L.start = c.s0; if (L.media) L.media.offset = c.o0; setStart(L, Math.min(L.end - 0.05, Math.max(0, snapT(c.s0 + dt)))); }
+      else if (c.mode === 'r') { L.end = c.e0; if (L.media) L.media.offset = c.o0; setEnd(L, Math.max(L.start + 0.05, snapT(c.e0 + dt))); }
       else { const d = Math.max(-c.s0, snapT(dt)); L.keys = clone(c.snap); L.start = c.s0; L.end = c.e0; shiftLayer(L, d); }
       clip.style.left = L.start * S.pps + 'px'; clip.style.width = (L.end - L.start) * S.pps + 'px';
       setExtent(L.end + viewT()); drawFrame();
@@ -1058,11 +1223,17 @@ function bindClip(clip, L) {
 }
 function bindKey(d, L, list) {
   bindDrag(d, {
-    onStart: () => ({ t0: list[0].k.t }),
-    onMove: (dt, c) => { const nt = Math.max(0, snapT(c.t0 + dt)); for (const { k } of list) k.t = nt; d.style.left = nt * S.pps + 'px'; setExtent(nt + viewT()); },
+    // a grabbed diamond that is part of a multi-key selection moves the whole selection by the same amount
+    onStart: () => { const sel = list.some(x => S.selKeys.has(x.k.id)) ? selectedKeyObjs() : [];
+      const all = sel.length > list.length ? sel : list.map(x => ({ L, ...x }));
+      const els = all.length > list.length ? [...tl.querySelectorAll('.kf.on')].map(el => [el, parseFloat(el.style.left)]) : [[d, list[0].k.t * S.pps]];
+      return { t0: list[0].k.t, all: all.map(x => ({ ...x, t0: x.k.t })), lo: Math.min(...all.map(x => x.k.t)), els }; },
+    onMove: (dt, c) => { const d0 = Math.max(-c.lo, snapT(c.t0 + dt) - c.t0); for (const x of c.all) x.k.t = +(x.t0 + d0).toFixed(4);
+      for (const [el, x0] of c.els) el.style.left = x0 + d0 * S.pps + 'px';
+      setExtent(c.t0 + d0 + viewT()); drawFrame(); },
     onEnd: (moved, c, ev) => {
       S.sel = L.id; S.multi.clear();
-      if (moved) { for (const p of new Set(list.map(x => x.prop))) L.keys[p].sort((a, b) => a.t - b.t); }
+      if (moved) { for (const x of c.all) x.L.keys[x.prop].sort((a, b) => a.t - b.t); }
       else { if (!ev.shiftKey && !ev.metaKey) S.selKeys.clear(); list.forEach(x => S.selKeys.add(x.k.id)); S.t = Math.min(P().duration, list[0].k.t); if (!['layer', 'ease'].includes(S.tab)) S.tab = 'ease'; }
       commit();
     },
@@ -1101,6 +1272,7 @@ function renderPanel() {
     case 'blend': content = L ? panelBlend(L) : need('Select a layer.'); break;
     case 'ease': ({ content, left, right } = fxPanelEase(L)); break;
     case 'presets': content = L ? panelPresets(L) : need('Select a layer.'); break;
+    case 'speed': content = L?.media ? panelSpeed(L) : need('Select a video or audio layer.'); break;
     case 'project': content = panelProject(); break;
     case 'points': ({ content, left } = panelPoints(L)); break;
     case 'draw': ({ content, right } = panelDraw(L)); break;
@@ -1122,9 +1294,9 @@ function tileGrid(L) {
   const editLabel = { text: 'Edit Text', image: 'Edit Image', video: 'Edit Video', audio: 'Edit Audio', draw: 'Edit Drawing', solid: 'Edit Solid', adjust: 'Edit Effects' }[L.type] || 'Edit Shape';
   return h('div', { class: 'tiles' },
     h('div', { class: 'trow small' },
-      T('speed', 'speed', '', soon('Speed'), 'sm corner'),
+      T('speed', 'speed', '', hasSound ? open('speed') : () => toast('Speed works on video and audio clips'), 'sm corner' + (hasSound ? '' : ' off')),
       h('div', { class: 'tgroup' }, T('trim-start', 'splitl', '', () => splitAt(L, 'start'), 'sm'), T('split', 'split', '', () => splitAt(L, 'split'), 'sm'), T('trim-end', 'splitr', '', () => splitAt(L, 'end'), 'sm')),
-      T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
+      T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); delete L.keys['media.volume']; L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
     h('div', { class: 'trow three' },
       T('style', 'fill', 'Color & Fill', visual ? open('style') : soon(), visual ? '' : 'off'),
       T('border', 'border', 'Border & Shadow', drawable ? open('border') : soon(), drawable ? '' : 'off'),
@@ -1142,6 +1314,38 @@ function tileGrid(L) {
 }
 
 function propKeyState(L, prop) { return findKey(L, prop, S.t) ? 2 : hasKeys(L, prop) ? 1 : 0; }
+const keyToggle = (L, prop) => ({ state: propKeyState(L, prop), toggle: () => { const q = findKey(L, prop, S.t); if (q) removeKey(L, prop, q.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } });
+// keyframeable colour / number for a nested value ('text.fill', 'shadow.blur' …): ◆ keys it at the playhead,
+// and once it is animated every edit writes a key
+function keyColor(L, prop, label, testid) {
+  const set = v => { writeProp(L, prop, S.t, v); rememberColor(v); commit(); };
+  const row = color({ label, value: valueAt(L, prop, S.t), key: keyToggle(L, prop), testid, onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: set });
+  return h('div', { class: 'ctl-colorx' }, row, colorTools(set, testid));
+}
+// eyedropper + recently used colours under every colour field
+const recentColors = () => { try { return JSON.parse(localStorage.getItem('kntc.swatches')) || []; } catch { return []; } };
+function rememberColor(c) {
+  if (!/^#[0-9a-f]{6}$/i.test(c)) return;
+  const list = [c.toLowerCase(), ...recentColors().filter(x => x !== c.toLowerCase())].slice(0, 10);
+  try { localStorage.setItem('kntc.swatches', JSON.stringify(list)); } catch {}
+}
+function colorTools(set, testid) {
+  const pick = h('button', { class: 'ib cdrop', title: 'Pick a colour from the preview', 'data-testid': testid ? testid + '-drop' : null, onclick: () => startEyedropper(set) }, icon('eyedrop'));
+  return h('div', { class: 'cswatches' }, pick, ...recentColors().map(c => h('button', { class: 'csw', style: { background: c }, title: c, onclick: () => set(c) })));
+}
+// tap the preview to sample a pixel (the browser's own EyeDropper, which can sample anywhere, when there is one)
+function startEyedropper(set) {
+  if (window.EyeDropper && !matchMedia('(pointer: coarse)').matches) { new EyeDropper().open().then(r => set(r.sRGBHex.slice(0, 7))).catch(() => {}); return; }
+  S.pick = set; stage.classList.add('picking'); toast('Tap the preview to pick a colour');
+}
+function samplePreview(px, py) {
+  const k = view.width / P().w, d = view.getContext('2d').getImageData(Math.max(0, Math.min(view.width - 1, Math.round(px * k))), Math.max(0, Math.min(view.height - 1, Math.round(py * k))), 1, 1).data;
+  return '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function keyNum(L, prop, label, min, max, step = 1, testid) {
+  return slider({ label, value: valueAt(L, prop, S.t), min, max, step, testid, key: keyToggle(L, prop),
+    onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: () => { commit({ silent: true }); renderTimeline(); } });
+}
 
 function panelLayer(L) {
   const out = h('div', {});
@@ -1155,10 +1359,17 @@ function panelLayer(L) {
       key: { state: propKeyState(L, prop), toggle: () => { const k = findKey(L, prop, S.t); if (k) removeKey(L, prop, k.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } },
     });
   });
-  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows));
+  const K = prop => keyNum(L, prop, PROP_META[prop].label, PROP_META[prop].min, PROP_META[prop].max, PROP_META[prop].step, 'prop-' + prop);
+  if (L.type === 'camera') { // pan (x / y), dolly (z), roll (rotation) and zoom; it moves every 3D layer
+    out.append(section('Camera  ·  moves 3D layers', K('x'), K('y'), K('z'), K('rotation'), K('zoom')));
+    return out;
+  }
+  out.append(section('Transform  ·  ◆ = keyframe at playhead', ...rows, ...XFORM_PROPS.map(K)));
+  out.append(section('3D', toggle({ label: '3D Layer', value: !!L.is3d, testid: 'is3d', onChange: v => { if (v) L.is3d = true; else delete L.is3d; commit(); } }),
+    ...(L.is3d ? XFORM3D_PROPS.map(K) : [])));
   out.append(section('Timing',
-    slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.start = Math.min(v, L.end - 0.05); }), onChange: () => commit() }),
-    slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => { L.end = Math.max(v, L.start + 0.05); }), onChange: () => commit() })));
+    slider({ label: 'In', value: L.start, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setStart(L, Math.min(v, L.end - 0.05))), onChange: () => commit() }),
+    slider({ label: 'Out', value: L.end, min: 0, max: Math.max(P().duration, L.end), step: 0.01, onInput: liveSet(v => setEnd(L, Math.max(v, L.start + 0.05))), onChange: () => commit() })));
   const act = (ic, label, fn) => h('button', { class: 'act', onclick: fn }, icon(ic), label);
   out.append(h('div', { class: 'acts' },
     act('center', 'Center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
@@ -1169,20 +1380,20 @@ function panelLayer(L) {
 
 const SHAPE_KINDS = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line', 'cross', 'arrow', 'heart', 'pie', 'half', 'trapezoid', 'flower'];
 function fieldMakers(L) {
-  const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
   const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => { commit({ silent: true }); renderTimeline(); } });
   const T = (label, obj, k) => toggle({ label, value: obj[k], onChange: v => { obj[k] = v; commit(); } });
-  return { C, N, T };
+  return { N, T };
 }
 function panelStyle(L) {
-  const out = h('div', {}), { C, N, T } = fieldMakers(L);
+  const out = h('div', {}), { T } = fieldMakers(L);
   if (L.type === 'shape') {
     const s = L.shape;
-    out.append(section('Fill', T('Fill', s, 'fillOn'), C('Color', s, 'fill'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
-  } else if (L.type === 'text') out.append(section('Color', C('Fill', L.text, 'fill')));
+    out.append(section('Fill', T('Fill', s, 'fillOn'), keyColor(L, 'shape.fill', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'shape.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'shape.gradAngle', 'Angle', 0, 360) : null));
+  } else if (L.type === 'text') { const tx = L.text;
+    out.append(section('Color', keyColor(L, 'text.fill', 'Fill', 'fill-color'), T('Gradient', tx, 'gradient'), tx.gradient ? keyColor(L, 'text.fill2', 'Color 2') : null, tx.gradient ? keyNum(L, 'text.gradAngle', 'Angle', 0, 360) : null)); }
   else if (L.type === 'solid') {
     const s = L.solid;
-    out.append(section('Solid', C('Color', s, 'color'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+    out.append(section('Solid', keyColor(L, 'solid.color', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'solid.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'solid.gradAngle', 'Angle', 0, 360) : null));
   } else if (L.type === 'draw') out.append(h('div', { class: 'hint' }, 'Drawing colours are picked per stroke in Edit Drawing.'), h('button', { class: 'act', onclick: () => openSub('draw') }, icon('freehand'), 'Edit Drawing'));
   else if (L.type === 'image' || L.type === 'video') out.append(h('div', { class: 'hint' }, 'Media layers keep their own colours — try Effects › Color Adjust.'));
   else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no fill — add effects; they apply to everything below.'));
@@ -1231,6 +1442,35 @@ function rulerSlider({ label, value, min, max, step = 10, onInput, onChange, rig
   requestAnimationFrame(draw);
   return row;
 }
+// Speed (0.1–8×, the clip stretches to cover the same source) + Reverse
+const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4];
+function panelSpeed(L) {
+  const m = L.media;
+  return h('div', {}, section('Speed',
+    slider({ label: 'Speed ×', value: m.speed || 1, min: 0.1, max: 8, step: 0.05, testid: 'speed', onInput: liveSet(v => setSpeed(L, v)), onChange: () => commit() }),
+    chips(SPEEDS.map(v => [v, v + '×', 'speed-' + v]), m.speed || 1, v => { setSpeed(L, +v); commit(); }),
+    toggle({ label: 'Reverse', value: !!m.reverse, testid: 'reverse', onChange: v => { setReverse(L, v); commit(); } })),
+    h('div', { class: 'hint' }, 'Reversed clips play silently.'));
+}
+// Volume (keyframeable) + Fade In / Fade Out for audio and video layers
+function soundFields(L) {
+  const { N } = fieldMakers(L), m = L.media, max = Math.max(0.1, L.end - L.start);
+  return [keyNum(L, 'media.volume', 'Volume', 0, 1, 0.01, 'audio-volume'), N('Fade In s', m, 'fadeIn', 0, max, 0.05, 'fade-in'), N('Fade Out s', m, 'fadeOut', 0, max, 0.05, 'fade-out'),
+    h('div', { class: 'acts' }, h('button', { class: 'act', 'data-testid': 'beat-markers', onclick: () => beatMarkers(L) }, icon('bookmark'), 'Add Beat Markers'))];
+}
+// beat markers: onsets in the clip's waveform (energy jumps well above the local average, at least 0.25 s apart)
+function beatMarkers(L) {
+  const pk = media.get(L.media.id)?.peaks; if (!pk) return toast('No sound to analyse in this clip');
+  const p = P(), ms = p.markers || (p.markers = []), found = [];
+  let last = -1;
+  for (let x = L.start; x < Math.min(L.end, p.duration); x += 0.01) {
+    const i = Math.floor(mediaTime(L, x) * 100); if (i < 1 || i >= pk.length) continue;
+    let avg = 0; for (let j = Math.max(0, i - 50); j < i; j++) avg += pk[j]; avg /= Math.min(50, i);
+    if (pk[i] > 0.1 && pk[i] > avg * 1.6 && pk[i] > pk[i - 1] && x - last >= 0.25) { found.push(snapT(x)); last = x; }
+  }
+  for (const t of found) if (!ms.some(m => Math.abs(m.t - t) < 1e-3)) ms.push({ id: uid(), t, color: '#8be1d4' });
+  ms.sort((a, b) => a.t - b.t); commit(); toast(found.length ? `Added ${found.length} beat marker${found.length > 1 ? 's' : ''}` : 'No clear beats found');
+}
 function panelEdit(L) {
   const out = h('div', {}), { N } = fieldMakers(L);
   const big = Math.max(P().w, P().h) * 1.5;
@@ -1253,8 +1493,8 @@ function panelEdit(L) {
       K('Width', 'w', 1, big, 'shape-w'), K('Height', 'h', 1, big, 'shape-h'),
       s.kind === 'rect' ? K('Corner', 'radius', 0, Math.max(1, Math.round(Math.min(valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)) / 2)), 'shape-radius') : null,
       s.kind === 'star' || s.kind === 'polygon' ? N('Points', s, 'points', 3, 24) : null,
-      s.kind === 'star' ? N('Inner', s, 'inner', 0.05, 1, 0.01) : null,
-      s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null),
+      s.kind === 'star' ? keyNum(L, 'shape.inner', 'Inner', 0.05, 1, 0.01) : null,
+      s.kind === 'ring' ? keyNum(L, 'shape.thickness', 'Thickness', 0.02, 1, 0.01) : null),
       h('div', { class: 'acts' }, h('button', { class: 'act', 'data-testid': 'to-points', onclick: () => {
         const n = s.kind === 'ellipse' || s.kind === 'ring' ? 24 : 16;
         s.pts = shapePoints(s, n).map(p => p.map(v => +v.toFixed(1))); s.kind = 'path'; s.closed = true; S.tab = 'points'; commit();
@@ -1265,8 +1505,10 @@ function panelEdit(L) {
     ta.addEventListener('input', () => { t.content = ta.value; drawFrame(); });
     ta.addEventListener('change', () => { L.name = t.content.split('\n')[0].slice(0, 18) || 'Text'; commit(); });
     out.append(section('Text', ta,
-      select({ label: 'Font', value: t.font, options: Object.keys(FONTS).map(f => [f, f]), onChange: v => { t.font = v; commit(); } }),
-      N('Size', t, 'size', 8, 800), N('Weight', t, 'weight', 100, 900, 100), N('Tracking', t, 'tracking', -0.2, 1, 0.01), N('Line Ht', t, 'lineHeight', 0.6, 3, 0.05),
+      select({ label: 'Font', value: t.font, testid: 'text-font', options: [...Object.keys(FONTS).map(f => [f, f]), ...(P().fonts || []).map(f => ['f:' + f.id, f.name]), ['+import', 'Import Font…']],
+        onChange: v => { if (v === '+import') { pickFont(L); renderPanel(); } else { t.font = v; commit(); } } }),
+      keyNum(L, 'text.boxW', 'Box Width', 0, Math.max(P().w, P().h) * 2, 1, 'text-box'),
+      keyNum(L, 'text.size', 'Size', 8, 800, 1, 'text-size'), N('Weight', t, 'weight', 100, 900, 100), keyNum(L, 'text.tracking', 'Tracking', -0.2, 1, 0.01, 'text-tracking'), keyNum(L, 'text.lineHeight', 'Line Ht', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
       toggle({ label: 'Italic', value: t.italic, onChange: v => { t.italic = v; commit(); } })));
   } else if (L.type === 'image' || L.type === 'video') {
@@ -1275,33 +1517,38 @@ function panelEdit(L) {
       h('div', { class: 'acts' },
         h('button', { class: 'act', onclick: () => { writeProp(L, 'scale', S.t, +Math.min(P().w / m.w, P().h / m.h).toFixed(3)); commit(); } }, 'Fit'),
         h('button', { class: 'act', onclick: () => { writeProp(L, 'scale', S.t, +Math.max(P().w / m.w, P().h / m.h).toFixed(3)); commit(); } }, 'Fill')),
-      L.type === 'video' ? N('Volume', m, 'volume', 0, 1, 0.01) : null,
+      ...(L.type === 'video' ? soundFields(L) : []),
       L.type === 'video' ? N('Offset s', m, 'offset', 0, 600, 0.05) : null));
   } else if (L.type === 'audio') {
     const m = L.media;
-    out.append(section('Audio', h('div', { class: 'hint' }, m.duration ? `Source ${tc(m.duration)}` : ''), N('Volume', m, 'volume', 0, 1, 0.01, 'audio-volume'), N('Offset s', m, 'offset', 0, 600, 0.05)));
+    out.append(section('Audio', h('div', { class: 'hint' }, m.duration ? `Source ${tc(m.duration)}` : ''), ...soundFields(L), N('Offset s', m, 'offset', 0, 600, 0.05)));
   }
   return out;
 }
 function panelBorder(L) {
   const out = h('div', {});
-  const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
-  const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => commit({ silent: true }) });
-  if (L.type === 'shape') out.append(section('Border', N('Width', L.shape, 'strokeW', 0, 120, 1, 'border-width'), C('Color', L.shape, 'stroke')));
-  else if (L.type === 'text') out.append(section('Border', N('Width', L.text, 'strokeW', 0, 60, 1, 'border-width'), C('Color', L.text, 'stroke')));
+  if (L.type === 'shape') out.append(section('Border', keyNum(L, 'shape.strokeW', 'Width', 0, 120, 1, 'border-width'), keyColor(L, 'shape.stroke', 'Color', 'border-color')));
+  else if (L.type === 'text') out.append(section('Border', keyNum(L, 'text.strokeW', 'Width', 0, 60, 1, 'border-width'), keyColor(L, 'text.stroke', 'Color', 'border-color')));
   if (L.type === 'adjust') { out.append(h('div', { class: 'hint' }, 'Adjustment layers have no border or shadow.')); return out; }
   const sh = L.shadow || (L.shadow = { on: false, color: '#000000', blur: 24, dx: 0, dy: 16, alpha: 0.6 });
   out.append(section('Shadow', toggle({ label: 'Shadow', value: sh.on, testid: 'shadow-on', onChange: v => { sh.on = v; commit(); } }),
-    sh.on ? C('Color', sh, 'color') : null, sh.on ? N('Blur', sh, 'blur', 0, 200) : null,
-    sh.on ? N('Offset X', sh, 'dx', -200, 200) : null, sh.on ? N('Offset Y', sh, 'dy', -200, 200) : null,
-    sh.on ? N('Opacity', sh, 'alpha', 0, 1, 0.01) : null));
+    sh.on ? keyColor(L, 'shadow.color', 'Color', 'shadow-color') : null, sh.on ? keyNum(L, 'shadow.blur', 'Blur', 0, 200, 1, 'shadow-blur') : null,
+    sh.on ? keyNum(L, 'shadow.dx', 'Offset X', -200, 200) : null, sh.on ? keyNum(L, 'shadow.dy', 'Offset Y', -200, 200) : null,
+    sh.on ? keyNum(L, 'shadow.alpha', 'Opacity', 0, 1, 0.01) : null));
   return out;
 }
 
 function panelBlend(L) {
+  const mt = L.matte || {}, others = P().layers.filter(o => o !== L && visualLayer(o) && o.type !== 'group');
+  const setM = patch => { const n = { ...mt, ...patch }; if (n.layer) L.matte = n; else delete L.matte; commit(); };
   return h('div', {},
-    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, testid: 'opacity', onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }),
-    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')));
+    slider({ label: 'Opacity', value: valueAt(L, 'opacity', S.t), min: 0, max: 1, step: 0.01, testid: 'opacity', key: keyToggle(L, 'opacity'), onInput: liveSet(v => writeProp(L, 'opacity', S.t, v)), onChange: () => commit({ silent: true }) }),
+    section('Blend Mode', chips(BLEND_MODES.map(([id, label]) => [id, label, 'blend-' + id]), L.blend, v => { L.blend = v; commit(); }, 'blend')),
+    section('Mask (track matte)',
+      select({ label: 'Mask Layer', value: mt.layer || '', testid: 'matte-layer', options: [['', 'None'], ...others.map(o => [o.id, o.name])], onChange: v => setM({ layer: v || null }) }),
+      mt.layer ? chips([['alpha', 'Alpha', 'matte-alpha'], ['luma', 'Luma', 'matte-luma']], mt.mode || 'alpha', v => setM({ mode: v })) : null,
+      mt.layer ? toggle({ label: 'Invert', value: !!mt.invert, testid: 'matte-invert', onChange: v => setM({ invert: v }) }) : null,
+      mt.layer ? h('div', { class: 'hint' }, 'Hide the mask layer (eye) if it should only cut, not show.') : null));
 }
 
 // ---- Edit Points (vector path): trackpad cursor + tap to place, or tap / drag directly on the preview ----
@@ -1310,6 +1557,15 @@ function updateCursorBoxes() {
   const x = $('[data-testid=cursor-x]'), y = $('[data-testid=cursor-y]');
   if (x && document.activeElement !== x) x.value = c[0].toFixed(1);
   if (y && document.activeElement !== y) y.value = c[1].toFixed(1);
+}
+// world positions of a smooth point's out / in handle dots
+function ptHandles(L, i) { const p = L.shape.pts[i]; return [toWorld(L, p[0] + p[2], p[1] + p[3]), toWorld(L, p[0] - p[2], p[1] - p[3])]; }
+// corner -> smooth: handles along the line between its neighbours (1/6 of their distance each side)
+function smoothPoint(L, i) {
+  const pts = L.shape.pts, n = pts.length, closed = L.shape.closed !== false, p = pts[i];
+  const a = pts[i > 0 ? i - 1 : closed ? n - 1 : i], b = pts[i < n - 1 ? i + 1 : closed ? 0 : i];
+  let hx = (b[0] - a[0]) / 6, hy = (b[1] - a[1]) / 6; if (!hx && !hy) hx = 40;
+  pts[i] = [p[0], p[1], +hx.toFixed(1), +hy.toFixed(1)];
 }
 function placePoint() {
   const L = selLayer(); if (!L || L.type !== 'shape' || L.shape.kind !== 'path') return;
@@ -1336,7 +1592,8 @@ function panelPoints(L) {
   padEl.addEventListener('pointercancel', () => { tp = null; });
   const left = [
     h('button', { class: 'ib' + (L.shape.closed !== false ? ' on' : ''), title: 'Closed path', 'data-testid': 'pt-close', onclick: () => { L.shape.closed = L.shape.closed === false; commit(); } }, icon('node')),
-    h('button', { class: 'ib dim', title: 'Curves (coming soon)', onclick: soon('Curved points') }, icon('bezier')),
+    h('button', { class: 'ib' + (S.curve ? ' on' : ''), title: 'Curves: tapped / new points become smooth', 'data-testid': 'pt-curve', onclick: () => { S.curve = !S.curve; renderPanel(); } }, icon('bezier')),
+    h('button', { class: 'ib', title: 'Make the selected point a corner', 'data-testid': 'pt-corner', onclick: () => { const i = S.ptSel ?? L.shape.pts.length - 1, p = L.shape.pts[i]; if (p) { L.shape.pts[i] = [p[0], p[1]]; commit(); } } }, icon('node')),
     h('button', { class: 'ib', title: 'Add point at cursor', onclick: placePoint }, icon('pluscircle')),
   ];
   return { content: padEl, left };
@@ -1366,8 +1623,8 @@ function panelDraw(L) {
         h('button', { class: 'ib', title: 'Clear drawing', 'data-testid': 'draw-clear', onclick: () => { if (L.draw.strokes.length && confirm('Clear this drawing?')) { L.draw.strokes = []; commit(); } } }, icon('canvas')),
         h('button', { class: 'ib', title: 'Colour picker', onclick: openColorPicker }, icon('palette')))));
   const right = h('div', { class: 'sub-r' }, ['pencil', 'brush', 'smudge', 'eraser'].map(t =>
-    h('button', { class: 'ib' + (d.tool === t ? ' on' : '') + (t === 'smudge' ? ' dim' : ''), title: t[0].toUpperCase() + t.slice(1), 'data-testid': 'tool-' + t,
-      onclick: () => { if (t === 'smudge') return toast('Smudge: coming soon'); d.tool = t; renderPanel(); } }, icon(t))));
+    h('button', { class: 'ib' + (d.tool === t ? ' on' : ''), title: t[0].toUpperCase() + t.slice(1), 'data-testid': 'tool-' + t,
+      onclick: () => { d.tool = t; renderPanel(); } }, icon(t))));
   return { content, right };
 }
 
@@ -1432,10 +1689,10 @@ function sheetContent() {
     case 'object': return h('div', { class: 'sh-obj' },
       tile('solid', 'Solid Color', () => addLayer(makeLayer(P(), 'solid')), 'add-solid'),
       tile('adjust', 'Adjustment', () => { const L = makeLayer(P(), 'adjust'); addLayer(L, { tab: 'fx' }); }, 'add-adjust'),
-      tile('camera', 'Camera', soon('Camera'), 'add-camera'),
-      tile('group', 'Empty Group', soon('Groups'), 'add-group'),
-      tile('nullobj', 'Null', soon('Null objects'), 'add-null'),
-      tile('element', 'Element / Project', soon('Elements'), 'add-element'));
+      tile('camera', 'Camera', () => { if (P().layers.some(l => l.type === 'camera')) return toast('This project already has a camera'); addLayer(makeLayer(P(), 'camera'), { tab: 'layer' }); toast('Turn on 3D Layer (Move & Transform) for layers the camera should move'); }, 'add-camera'),
+      tile('group', 'Empty Group', () => addLayer(makeLayer(P(), 'group')), 'add-group'),
+      tile('nullobj', 'Null', () => addLayer(makeLayer(P(), 'null')), 'add-null'),
+      tile('element', 'Element / Project', openElements, 'add-element'));
     case 'template': return h('div', { class: 'sh-tpl' },
       tile('grid', 'View All', soon('Templates'), 'tpl-all'),
       tile('demo', 'KINETIC Neon Demo', () => { if (confirm('Replace this project with the KINETIC demo?')) setProject(demoProject(P().aspect)); }, 'add-demo'));
@@ -1467,7 +1724,7 @@ function openSheet(tabId) { S.multi.clear(); if (S.sel) { S.sel = null; S.selKey
 // colour tags shown on the layer's timeline clip (sampled from the reference swatches)
 const TAGS = [null, '#e34829', '#c8495c', '#da8d57', '#faeb90', '#8be1d4', '#5aa9e6', '#7b6cf0', '#b66ee0', '#9a9ca8'];
 const isLight = c => { const n = parseInt(c.slice(1), 16); return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) > 170; };
-const visualLayer = L => L.type !== 'audio' && L.type !== 'adjust';
+const visualLayer = L => !['audio', 'adjust', 'camera', 'null'].includes(L.type);
 // Fit / Fill / Stretch to the composition: centred, unrotated, scaled relative to the canvas
 function fitLayer(L, how) {
   const p = P(), b = layerBounds(L, p, view.getContext('2d'));
@@ -1504,7 +1761,7 @@ function openLayerMenu() {
     class: 'lm-sw' + (c ? '' : ' none') + ((L.tag || null) === c ? ' on' : ''), style: c ? { '--c': c } : {}, title: c ? 'Colour tag' : 'No colour tag', 'aria-label': c ? 'Tag ' + c : 'No tag',
     'data-testid': 'lm-tag-' + i, onclick: () => { L.tag = c; if (!c) delete L.tag; closeLayerMenu(); commit(); } })));
   const lmIn = h('div', { class: 'lm-in' },
-    it('Save to My Elements', 'save', soon('Save to My Elements')),
+    it('Save to My Elements', 'save', () => saveElement(L)),
     it('Flip Horizontally', 'flip-h', () => { L.flipX = !L.flipX; commit(); }, noVis),
     it('Flip Vertically', 'flip-v', () => { L.flipY = !L.flipY; commit(); }, noVis),
     it('Fit Composition Area', 'fit', () => fitLayer(L, 'fit'), noVis),
@@ -1513,6 +1770,10 @@ function openLayerMenu() {
     hr(),
     it(L.clip ? 'Release Clipping Mask' : 'Create Clipping Mask', 'clip', () => toggleClip(L), L.clip || clipOk ? '' : 'Needs a visual layer below this one'),
     it('Convert to Outline', 'outline', () => convertToOutline(L), L.type === 'shape' ? '' : 'Convert to Outline works on shapes'),
+    hr(),
+    L.parent && !L.group ? it('Release Parent (' + (layerById(L.parent)?.name || '?') + ')', 'unparent', () => { reparent(L, null); commit(); }) : it('Parent to Layer…', 'parent', () => pickParent(L), L.group ? 'Layers in a group follow the group' : ''),
+    L.type === 'group' ? it('Ungroup', 'ungroup', () => ungroup(L)) : it(S.multi.size > 1 ? `Group ${S.multi.size} Layers` : 'Group Layer', 'group', () => groupLayers(S.multi.size > 1 ? P().layers.filter(l => S.multi.has(l.id)) : [L]), L.group ? 'Already in a group' : ''),
+    L.group ? it('Remove from Group', 'leave-group', () => { const g = L.group; delete L.group; if (L.parent === g) reparent(L, null); commit(); }) : null,
     hr(), tags, hr(),
     it('Center on Canvas', 'center', () => { writeProp(L, 'x', S.t, P().w / 2); writeProp(L, 'y', S.t, P().h / 2); commit(); }),
     it(L.visible ? 'Hide Layer' : 'Show Layer', 'hide', () => { L.visible = !L.visible; commit(); }),
@@ -1657,6 +1918,22 @@ function openCopyMenu() {
   copyMenu.style.setProperty('--ax', (innerWidth - right - (r.left + r.width / 2)) + 'px');
   cmIn.style.maxHeight = Math.round(r.top - 10 - 12 - 50) + 'px';
   $('#btnCopy').classList.add('on');
+}
+// keyframe clipboard (localStorage, so it works across projects)
+function copySelectedKeys() {
+  const ks = selectedKeyObjs(); if (!ks.length) return toast('Select keyframes first');
+  const L = ks[0].L, list = ks.filter(x => x.L === L);
+  localStorage.setItem('kntc.keyclip', JSON.stringify(copyKeys(list))); toast(`Copied ${list.length} keyframe${list.length > 1 ? 's' : ''}`);
+}
+function pasteKeysHere() {
+  const L = selLayer(); if (!L) return toast('Select a layer first');
+  let clip = null; try { clip = JSON.parse(localStorage.getItem('kntc.keyclip')); } catch {}
+  if (!clip?.keys?.length) return toast('No keyframes copied');
+  const ks = pasteKeys(L, clip, snapT(S.t)); if (!ks.length) return toast('Those keyframes do not fit this layer');
+  S.selKeys.clear(); ks.forEach(k => S.selKeys.add(k.id)); commit(); toast(`Pasted ${ks.length} keyframe${ks.length > 1 ? 's' : ''}`);
+}
+function selectAllKeys() {
+  const L = selLayer(); if (!L) return; S.selKeys.clear(); for (const { k } of allKeys(L)) S.selKeys.add(k.id); renderTimeline(); renderPanel();
 }
 function selectedKeyObjs() {
   const out = [];
@@ -1873,9 +2150,13 @@ function openProjectSheet() {
         row('Frame Rate', '', dd('proj-fps', p.fps, [24, 25, 30, 48, 50, 60].map(f => [f, f + ' fps']), v => { P().fps = +v; commit(); })),
         row('Background', '', bgDD), bgPick,
         row('Duration', h('small', {}, 'seconds'), dur),
+        row('Motion Blur', h('small', {}, 'animated layers'), dd('proj-mblur', p.motionBlur?.on ? String(p.motionBlur.shutter) : 'off',
+          [['off', 'Off'], ['90', 'On · 90° shutter'], ['180', 'On · 180° shutter'], ['360', 'On · 360° shutter']],
+          v => { if (v === 'off') delete P().motionBlur; else P().motionBlur = { on: true, shutter: +v, samples: 8 }; commit(); })),
         h('div', { class: 'cr-acts' },
           act('menu', 'Projects', 'open-projects', () => { close(); openProjects(); }), act('plus', 'New', 'new-project', () => openCreate()),
-          act('export', 'Save JSON', 'export-json', exportJSON), act('up', 'Load JSON', 'import-json', () => $('#fileJson').click()), act('image', 'Frame PNG', 'export-png', exportPNG)))));
+          act('export', 'Save JSON', 'export-json', exportJSON), act('up', 'Load JSON', 'import-json', () => $('#fileJson').click()), act('image', 'Frame PNG', 'export-png', exportPNG),
+          act('dup', 'Share Project', 'share-project', shareProject), act('bookmark', 'Add Marker', 'add-marker', () => { addMarker(S.t); close(); })))));
   mark(isStd(p.aspect) ? p.aspect : 'custom'); updSize();
   root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
 }
@@ -1897,9 +2178,28 @@ function openProjects() {
       h('button', { class: 'mini', title: 'Delete', onclick: () => { if (x.id === P().id) return toast('Open another project first'); if (confirm('Delete ' + x.name + '?')) { store.deleteProject(x.id); openProjects(); } } }, icon('trash'))))));
 }
 function newProjectFlow() { openCreate(); }
+// the project as a .kntc.json file (media + fonts embedded) handed to the share sheet; downloads where sharing isn't offered
+async function projectFile() {
+  const p = clone(P()); p.media = {};
+  for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
+  for (const f of p.fonts || []) { const b = await store.getMedia(f.id); if (b) p.media[f.id] = await store.blobToDataURL(b); }
+  return new File([JSON.stringify(p)], (p.name || 'project').replace(/\W+/g, '_') + '.kntc.json', { type: 'application/json' });
+}
+async function shareProject() {
+  const f = await projectFile();
+  if (navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], title: P().name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  download(f, f.name); toast('Project saved — send the file; open it with Load JSON or Import on Home');
+}
+// ---- timeline markers (bookmarks): ruler flags; tap to jump, double-tap to remove ----
+function addMarker(t, color = '#f7cc4a') {
+  const p = P(), ms = p.markers || (p.markers = []), tt = snapT(t);
+  if (ms.some(m => Math.abs(m.t - tt) < 1e-3)) return toast('There is a marker here already');
+  ms.push({ id: uid(), t: tt, color }); ms.sort((a, b) => a.t - b.t); commit(); toast('Marker added');
+}
 async function exportJSON() {
   const p = clone(P()); p.media = {};
   for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
+  for (const f of p.fonts || []) { const b = await store.getMedia(f.id); if (b) p.media[f.id] = await store.blobToDataURL(b); }
   download(new Blob([JSON.stringify(p)], { type: 'application/json' }), (p.name || 'project').replace(/\W+/g, '_') + '.kntc.json');
 }
 async function importJSON(file) {
@@ -1923,25 +2223,31 @@ function download(blob, name) {
 function openExport() {
   if (S.playing) togglePlay(false);
   const fm = supportedFormats(); const p = P();
-  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: Math.min(p.w, p.h), fps: p.fps, mbps: 10, audio: true };
-  const fmtOpts = [['auto', 'Auto'], ['mp4', 'MP4' + (fm.mp4 ? '' : ' ✕')], ['webm', 'WebM' + (fm.webm ? '' : ' ✕')]];
-  const info = h('div', { class: 'hint' });
-  const upd = () => { const s = exportSize(p, opts.shortSide); info.textContent = `${s.w}×${s.h} · ${opts.fps}fps · ${p.duration}s · ~${(opts.mbps * p.duration / 8).toFixed(1)} MB · renders in real time`; };
+  const opts = { format: fm.mp4 ? 'mp4' : 'webm', shortSide: Math.min(p.w, p.h), fps: p.fps, mbps: 10, audio: true, transparent: false };
+  const fmtOpts = [['auto', 'Auto'], ['mp4', 'MP4' + (fm.mp4 ? '' : ' ✕')], ['webm', 'WebM' + (fm.webm ? '' : ' ✕')], ['gif', 'GIF'], ['png', 'PNG Sequence (ZIP)']];
+  const info = h('div', { class: 'hint', 'data-testid': 'export-info' });
+  const exact = () => (opts.format === 'gif' || opts.format === 'png' || typeof VideoEncoder !== 'undefined');
+  const upd = () => {
+    const s = exportSize(p, opts.shortSide), still = opts.format === 'gif' || opts.format === 'png';
+    info.textContent = `${s.w}×${s.h} · ${opts.format === 'gif' ? Math.min(opts.fps, 50) : opts.fps}fps · ${p.duration}s` + (still ? '' : ` · ~${(opts.mbps * p.duration / 8).toFixed(1)} MB`) + (exact() ? ' · renders frame by frame' : ' · renders in real time');
+    tr.hidden = !['webm', 'gif', 'png'].includes(opts.format);
+  };
+  const tr = toggle({ label: 'Transparent background', value: opts.transparent, testid: 'export-transparent', onChange: v => (opts.transparent = v) });
   const prog = h('div', { class: 'prog' }, h('i'));
   const result = h('div', { class: 'result' });
   const go = h('button', { class: 'primary wide', 'data-testid': 'export-start' }, icon('export'), 'Render');
   go.onclick = async () => {
     go.disabled = true; result.replaceChildren(); prog.classList.add('run');
     try {
-      const r = await exportVideo(p, { format: opts.format, shortSide: opts.shortSide, fps: opts.fps, bitrate: opts.mbps * 1e6, audio: opts.audio,
+      const r = await exportVideo(p, { format: opts.format, shortSide: opts.shortSide, fps: opts.fps, bitrate: opts.mbps * 1e6, audio: opts.audio, transparent: opts.transparent,
         onProgress: f => (prog.firstChild.style.width = (f * 100).toFixed(1) + '%') });
       prog.firstChild.style.width = '100%';
       const name = `${p.name.replace(/\W+/g, '_')}_${r.w}x${r.h}.${r.ext}`;
       const file = new File([r.blob], name, { type: r.blob.type });
-      window.__lastExport = { size: r.blob.size, mime: r.mime, name, w: r.w, h: r.h };
+      window.__lastExport = { size: r.blob.size, mime: r.mime, name, w: r.w, h: r.h, exact: !!r.exact, frames: r.frames };
       const url = URL.createObjectURL(r.blob);
-      result.append(h('div', { class: 'hint', 'data-testid': 'export-result' }, `${name} · ${(r.blob.size / 1048576).toFixed(2)} MB · ${r.mime}`),
-        h('video', { src: url, controls: true, playsinline: true, muted: true, loop: true, class: 'preview' }),
+      const pv = r.ext === 'gif' ? h('img', { src: url, class: 'preview', alt: '' }) : r.ext === 'zip' ? h('div', { class: 'hint' }, `${r.frames} PNG frames`) : h('video', { src: url, controls: true, playsinline: true, muted: true, loop: true, class: 'preview' });
+      result.append(h('div', { class: 'hint', 'data-testid': 'export-result' }, `${name} · ${(r.blob.size / 1048576).toFixed(2)} MB · ${r.mime}`), pv,
         h('div', { class: 'acts' },
           h('a', { class: 'act', href: url, download: name, 'data-testid': 'export-download' }, icon('export'), 'Download'),
           navigator.canShare && navigator.canShare({ files: [file] }) ? h('button', { class: 'act', onclick: () => navigator.share({ files: [file], title: p.name }).catch(() => {}) }, icon('dup'), 'Share / Save to Photos') : null));
@@ -1949,14 +2255,14 @@ function openExport() {
     go.disabled = false; prog.classList.remove('run');
   };
   upd();
-  openDialog('Export Video', h('div', { class: 'plist' },
-    select({ label: 'Format', value: opts.format, options: fmtOpts, testid: 'export-format', onChange: v => (opts.format = v) }),
+  openDialog('Export', h('div', { class: 'plist' },
+    select({ label: 'Format', value: opts.format, options: fmtOpts, testid: 'export-format', onChange: v => { opts.format = v; upd(); } }),
     chips([[480, '480p'], [720, '720p'], [1080, '1080p'], [1440, '1440p'], [2160, '4K']].map(([v, t]) => [v, t, 'export-res-' + v]), opts.shortSide, v => { opts.shortSide = v; upd(); }),
-    select({ label: 'FPS', value: String(opts.fps), testid: 'export-fps', options: [['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
+    select({ label: 'FPS', value: String(opts.fps), testid: 'export-fps', options: [['12', '12'], ['15', '15'], ['24', '24'], ['25', '25'], ['30', '30'], ['48', '48'], ['50', '50'], ['60', '60']], onChange: v => { opts.fps = +v; upd(); } }),
     slider({ label: 'Mbps', value: opts.mbps, min: 1, max: 40, step: 1, onInput: v => { opts.mbps = v; upd(); } }),
-    toggle({ label: 'Video audio', value: opts.audio, onChange: v => (opts.audio = v) }),
-    info, go, prog, result,
-    h('div', { class: 'hint small' }, 'Keep this tab in front while rendering. Safari records MP4 (H.264); Chrome/Firefox record WebM (Chrome 126+ may also offer MP4).')));
+    toggle({ label: 'Audio', value: opts.audio, onChange: v => (opts.audio = v) }),
+    tr, info, go, prog, result,
+    h('div', { class: 'hint small' }, 'Video renders every frame exactly (MP4 / WebM via WebCodecs; older browsers record in real time — keep the tab in front). GIF, PNG frames and WebM can keep a transparent background.')));
   // chip selection highlight
   dlg.querySelectorAll('.chips .chip').forEach(b => b.addEventListener('click', () => { dlg.querySelectorAll('.chips .chip').forEach(x => x.classList.remove('on')); b.classList.add('on'); }));
 }
@@ -2009,14 +2315,23 @@ function buildChrome() {
     if ((!$('#home').hidden || !$('#create').hidden) && e.key !== 'Escape') return; // editor shortcuts only in the editor
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') { e.preventDefault(); if (S.selKeys.size) copySelectedKeys(); else if (selLayer()) copyLayers(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') { e.preventDefault(); if (S.tab === 'ease' && selLayer()) pasteKeysHere(); else pasteLayers(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); if (selLayer()) duplicateLayer(selLayer()); }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && selLayer()) { e.preventDefault(); selectAllKeys(); }
     else if (e.key === 'k') toggleKeyAll();
+    else if (e.key === 'm') addMarker(S.t);
     else if (e.key === 'Escape') { if (!$('#create').hidden) $('[data-testid=create-close]').click(); else if (!$('#home').hidden) closeHomeMenu(); else if (layerMenu) closeLayerMenu(); else if (copyMenu) closeCopyMenu(); else goBack(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const ks = selectedKeyObjs();
       if (ks.length) { ks.forEach(({ L, prop, k }) => removeKey(L, prop, k.id)); S.selKeys.clear(); commit(); }
       else if (selLayer()) deleteLayer(selLayer());
-    } else if (e.key === 'ArrowLeft') seek(S.t - 1 / P().fps);
-    else if (e.key === 'ArrowRight') seek(S.t + 1 / P().fps);
+    } else if (e.key.startsWith('Arrow') && selLayer() && !selLayer().locked && visualLayer(selLayer()) && !e.altKey) { // nudge 1 px (Shift: 10 px)
+      e.preventDefault(); const L = selLayer(), d = e.shiftKey ? 10 : 1, dx = { ArrowLeft: -d, ArrowRight: d }[e.key] || 0, dy = { ArrowUp: -d, ArrowDown: d }[e.key] || 0;
+      writeProp(L, 'x', S.t, +(valueAt(L, 'x', S.t) + dx).toFixed(2)); writeProp(L, 'y', S.t, +(valueAt(L, 'y', S.t) + dy).toFixed(2)); commit({ silent: true });
+    }
+    else if (e.key === 'ArrowLeft' || e.key === ',') seek(S.t - 1 / P().fps);
+    else if (e.key === 'ArrowRight' || e.key === '.') seek(S.t + 1 / P().fps);
   });
 }
 function afterHistory(s) { closeLayerMenu(); closeCopyMenu(); S.project = s; for (const id of S.multi) if (!s.layers.some(l => l.id === id)) S.multi.delete(id); if (S.sel && !s.layers.some(l => l.id === S.sel)) { S.sel = null; if (S.tab !== 'project') S.tab = null; } hydrateMedia(s); scheduleSave(); refreshAll(); }
@@ -2024,7 +2339,7 @@ function undo() { const s = history.undo(); if (s) afterHistory(s); }
 function redo() { const s = history.redo(); if (s) afterHistory(s); }
 
 function boot() {
-  initFxUI({ S, P, selLayer, commit, renderPanel, drawFrame, renderTimeline, refreshAll, selectedKeyObjs });
+  initFxUI({ S, P, selLayer, commit, renderPanel, drawFrame, renderTimeline, refreshAll, selectedKeyObjs, copySelectedKeys, pasteKeysHere, selectAllKeys });
   buildChrome(); lockPage(); bindTimelineGestures(); bindStageWrapTap(); bindPreviewZoom();
   const last = store.lastProjectId();
   let p = last && store.loadProject(last);
@@ -2034,7 +2349,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom,
+    importFont, addMarker, saveElement, insertElement, addComp, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }
