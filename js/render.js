@@ -1,5 +1,5 @@
 // Canvas compositor: draws layers, runs the WebGL effect chain, applies blend modes.
-import { valueAt } from './state.js';
+import { valueAt, evalNs } from './state.js';
 import { FXEngine, EFFECTS, activeFx, evalParams, isShaderFx, applyTransformEffects, applyTextEffects, shapeEffects } from './effects.js';
 
 export const BLEND_MODES = [
@@ -28,12 +28,7 @@ let lastProject = null, lastT = 0;
 const measureCtx = () => (measureCtx.c || (measureCtx.c = document.createElement('canvas').getContext('2d')));
 
 // keyframed shape geometry (Width / Height / Corner etc. may be animated: rounded square -> circle morphs)
-export function evalShape(L, t) {
-  if (!L.shape) return L.shape;
-  let out = null;
-  for (const k in L.keys) if (k.startsWith('shape.') && L.keys[k].length) { out = out || { ...L.shape }; out[k.slice(6)] = valueAt(L, k, t); }
-  return out || L.shape;
-}
+export function evalShape(L, t) { return evalNs(L, 'shape', t); }
 // world-space outline of a layer (for Move Along Path / Repeat Along Path)
 function pathOfLayer(project, id, t) {
   const L = project?.layers.find(l => l.id === id); if (!L || L.type !== 'shape') return null;
@@ -53,7 +48,7 @@ export function evalTransform(L, t, project = lastProject) {
   return applyTransformEffects(L, tr, t, c);
 }
 export function evalText(L, t, project = lastProject) {
-  const tx = { ...L.text };
+  const tx = { ...evalNs(L, 'text', t) };
   if (L.effects?.length) applyTextEffects(L, tx, t, fxCtx(L, t, project));
   return tx;
 }
@@ -201,7 +196,7 @@ function shapePerimeter(s) {
 function drawContent(ctx, L, project, ev = {}) {
   switch (L.type) {
     case 'solid': {
-      const s = L.solid;
+      const s = ev.solid || L.solid;
       ctx.fillStyle = s.gradient ? gradient(ctx, project.w, project.h, s.color, s.fill2, s.gradAngle) : s.color;
       ctx.fillRect(-project.w / 2, -project.h / 2, project.w, project.h); break;
     }
@@ -339,11 +334,11 @@ export class Renderer {
         ctx.globalCompositeOperation = op === 'source-over' ? 'source-atop' : op; ctx.drawImage(out, 0, 0); ctx.restore();
         return;
       }
-      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
+      const evAt = tt => ({ shape: L.type === 'shape' ? evalShape(L, tt) : null, tx: L.type === 'text' ? evalText(L, tt, project) : null, solid: L.type === 'solid' ? evalNs(L, 'solid', tt) : null, sfx: fxs.length ? shapeEffects(L, tt) : null });
       const drawTo = (c, tt = t, trr = tr) => {
         c.setTransform(s, 0, 0, s, 0, 0);
         c.translate(trr.x, trr.y); c.rotate(trr.rotation * D); c.scale(trr.scale * trr.sx * (L.flipX ? -1 : 1), trr.scale * trr.sy * (L.flipY ? -1 : 1));
-        if (L.shadow?.on) { const sh = L.shadow, n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
+        if (L.shadow?.on) { const sh = evalNs(L, 'shadow', tt), n = parseInt(sh.color.slice(1), 16); c.shadowColor = `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${sh.alpha ?? 0.6})`; c.shadowBlur = sh.blur * s; c.shadowOffsetX = sh.dx * s; c.shadowOffsetY = sh.dy * s; }
         drawContent(c, L, project, evAt(tt));
       };
       const simple = !useGL && !mb && !echo && op === 'source-over' && L.type !== 'text' && L.type !== 'draw' && !L.shadow?.on && !(L.type === 'shape' && (L.shape.strokeW > 0 || fxs.length) && tr.opacity < 1);

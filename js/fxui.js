@@ -11,10 +11,17 @@ export function initFxUI(ctx) { X = ctx; }
 const S = () => X.S, L_ = () => X.selLayer();
 
 // ---------- labels ----------
-const SHAPE_LABEL = { w: 'Width', h: 'Height', radius: 'Corner', points: 'Points', inner: 'Inner', thickness: 'Thickness' };
+const SHAPE_LABEL = { w: 'Width', h: 'Height', radius: 'Corner', points: 'Points', inner: 'Inner', thickness: 'Thickness', fill: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle', stroke: 'Border Color', strokeW: 'Border Width' };
+const NS_LABEL = {
+  text: { fill: 'Text Color', stroke: 'Border Color', strokeW: 'Border Width', size: 'Text Size', tracking: 'Tracking', lineHeight: 'Line Height' },
+  solid: { color: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle' },
+  shadow: { color: 'Shadow Color', blur: 'Shadow Blur', dx: 'Shadow X', dy: 'Shadow Y', alpha: 'Shadow Opacity' },
+  media: { volume: 'Volume' },
+};
 export function propLabel(L, prop) {
   if (PROP_META[prop]) return PROP_META[prop].label;
   if (prop.startsWith('shape.')) return SHAPE_LABEL[prop.slice(6)] || prop.slice(6);
+  const [ns, k] = prop.split('.'); if (NS_LABEL[ns]) return NS_LABEL[ns][k] || k;
   if (prop.startsWith('fx.')) { const [, id, k] = prop.split('.'); const f = L?.effects.find(e => e.id === id), d = f && EFFECTS[f.type]; return d ? `${d.name} · ${d.params[k]?.label || k}` : k; }
   return prop;
 }

@@ -35,11 +35,14 @@ export function slider({ label, value, min, max, step = 0.01, onInput, onChange,
   return row;
 }
 
-export function color({ label, value, onChange, onInput }) {
-  const inp = h('input', { type: 'color', value });
-  inp.addEventListener('input', () => onInput?.(inp.value));
+export function color({ label, value, onChange, onInput, key, testid }) {
+  const inp = h('input', { type: 'color', value, 'data-testid': testid });
+  const code = h('code', {}, value);
+  inp.addEventListener('input', () => { code.textContent = inp.value; onInput?.(inp.value); });
   inp.addEventListener('change', () => onChange?.(inp.value));
-  return h('div', { class: 'ctl ctl-color' }, h('label', {}, label), inp, h('code', {}, value));
+  const row = h('div', { class: 'ctl ctl-color' }, h('label', {}, label), inp, code);
+  if (key) row.append(h('button', { class: 'kd' + (key.state === 2 ? ' on' : key.state === 1 ? ' anim' : ''), title: 'Keyframe', 'data-testid': testid ? testid + '-key' : null, onclick: key.toggle }, h('span')));
+  return row;
 }
 
 export function toggle({ label, value, onChange, testid }) {

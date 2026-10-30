@@ -31,6 +31,22 @@ with sync_playwright() as pw:
       return parts; }""")
     check('split second half continues the source where the first ends', r == [[0, 3, 0], [3, 6, 3]], r)
 
+    # --- style keyframes: colours, border, shadow, text size animate between keys ---
+    r = E("""async () => { const st = await import('./js/state.js'), R = await import('./js/render.js'); const p = st.newProject('1:1');
+      const S = st.makeLayer(p, 'shape'); st.setKey(S, 'shape.fill', 0, '#000000', { type: 'linear' }); st.setKey(S, 'shape.fill', 2, '#ffffff'); st.setKey(S, 'shape.strokeW', 0, 0); st.setKey(S, 'shape.strokeW', 2, 20);
+      S.keys['shape.fill'][0].ease = S.keys['shape.strokeW'][0].ease = { type: 'linear' };
+      const T = st.makeLayer(p, 'text'); st.setKey(T, 'text.size', 0, 100); st.setKey(T, 'text.size', 1, 200); T.keys['text.size'][0].ease = { type: 'linear' };
+      T.shadow = { on: true, color: '#000000', blur: 0, dx: 0, dy: 0, alpha: 1 }; st.setKey(T, 'shadow.blur', 0, 0); st.setKey(T, 'shadow.blur', 1, 40); T.keys['shadow.blur'][0].ease = { type: 'linear' };
+      const V = st.makeLayer(p, 'solid'); st.setKey(V, 'solid.color', 0, '#ff0000'); st.setKey(V, 'solid.color', 1, '#0000ff'); V.keys['solid.color'][0].ease = { type: 'linear' };
+      return { fill: R.evalShape(S, 1).fill, sw: R.evalShape(S, 1).strokeW, size: R.evalText(T, 0.5, p).size, blur: st.evalNs(T, 'shadow', 0.5).blur, solid: st.evalNs(V, 'solid', 0.5).color, base: S.shape.fill }; }""")
+    check('colour / border / text size / shadow / solid keyframes interpolate', r['fill'] == '#808080' and r['sw'] == 10 and r['size'] == 150 and r['blur'] == 20 and r['solid'] == '#800080', r)
+    # UI: the Color & Fill panel has a ◆ on the colour; keying it then editing at another time animates the fill
+    r = E("""async () => { const A = __app, L = A.project.layers.find(l => l.type === 'shape'); A.S.sel = L.id; A.seek(0); A.openSub('style'); await new Promise(r => setTimeout(r, 50));
+      document.querySelector('[data-testid=fill-color-key]').click(); A.seek(2);
+      const inp = document.querySelector('[data-testid=fill-color]'); inp.value = '#00ff00'; inp.dispatchEvent(new Event('input')); inp.dispatchEvent(new Event('change'));
+      const L2 = A.project.layers.find(l => l.id === L.id); return (L2.keys['shape.fill'] || []).map(k => [k.t, k.v]); }""")
+    check('Color & Fill ◆ keys the fill and later edits add keys', len(r) == 2 and r[1] == [2, '#00ff00'], r)
+
     print('page errors', errs[:5])
     check('no page errors', not errs, errs[:3])
     b.close()

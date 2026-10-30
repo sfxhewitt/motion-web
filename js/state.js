@@ -110,19 +110,29 @@ export function makeLayer(p, type, opts = {}) {
 // ---- keyframes ----
 export function hasKeys(L, prop) { return !!(L.keys[prop] && L.keys[prop].length); }
 
+// Nested layer objects whose values can be keyframed as '<ns>.<key>' (shape.fill, text.size, shadow.blur, media.volume …)
+export const NS = ['shape', 'text', 'solid', 'shadow', 'media'];
+// a copy of L[ns] with its keyframed values evaluated at t (the object itself when nothing in it is animated)
+export function evalNs(L, ns, t) {
+  const o = L[ns]; if (!o) return o;
+  let out = null;
+  for (const k in L.keys) if (k.startsWith(ns + '.') && L.keys[k].length) { out = out || { ...o }; out[k.slice(ns.length + 1)] = valueAt(L, k, t); }
+  return out || o;
+}
+
 // Animated values may be numbers, vectors (arrays), hex colours or discrete values (bool / select / layer id).
 export function baseGet(L, prop) {
   if (prop in L.props) return L.props[prop];
   const i = prop.indexOf('.'); if (i < 0) return L.props[prop];
   const ns = prop.slice(0, i), rest = prop.slice(i + 1);
-  if (ns === 'shape') return L.shape?.[rest];
+  if (NS.includes(ns)) return L[ns]?.[rest];
   if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); return f ? f.params[rest.slice(j + 1)] : undefined; }
   return undefined;
 }
 export function baseSet(L, prop, v) {
   const i = prop.indexOf('.'); if (i < 0) { L.props[prop] = v; return; }
   const ns = prop.slice(0, i), rest = prop.slice(i + 1);
-  if (ns === 'shape' && L.shape) L.shape[rest] = v;
+  if (NS.includes(ns)) { if (L[ns]) L[ns][rest] = v; }
   else if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); if (f) f.params[rest.slice(j + 1)] = v; }
 }
 const hexRe = /^#[0-9a-f]{6}$/i;

@@ -1142,6 +1142,16 @@ function tileGrid(L) {
 }
 
 function propKeyState(L, prop) { return findKey(L, prop, S.t) ? 2 : hasKeys(L, prop) ? 1 : 0; }
+const keyToggle = (L, prop) => ({ state: propKeyState(L, prop), toggle: () => { const q = findKey(L, prop, S.t); if (q) removeKey(L, prop, q.id); else setKey(L, prop, S.t, valueAt(L, prop, S.t)); commit(); } });
+// keyframeable colour / number for a nested value ('text.fill', 'shadow.blur' …): ◆ keys it at the playhead,
+// and once it is animated every edit writes a key
+function keyColor(L, prop, label, testid) {
+  return color({ label, value: valueAt(L, prop, S.t), key: keyToggle(L, prop), testid, onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: v => { writeProp(L, prop, S.t, v); commit(); } });
+}
+function keyNum(L, prop, label, min, max, step = 1, testid) {
+  return slider({ label, value: valueAt(L, prop, S.t), min, max, step, testid, key: keyToggle(L, prop),
+    onInput: liveSet(v => writeProp(L, prop, S.t, v)), onChange: () => { commit({ silent: true }); renderTimeline(); } });
+}
 
 function panelLayer(L) {
   const out = h('div', {});
@@ -1169,20 +1179,19 @@ function panelLayer(L) {
 
 const SHAPE_KINDS = ['rect', 'ellipse', 'triangle', 'star', 'polygon', 'ring', 'line', 'cross', 'arrow', 'heart', 'pie', 'half', 'trapezoid', 'flower'];
 function fieldMakers(L) {
-  const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
   const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => { commit({ silent: true }); renderTimeline(); } });
   const T = (label, obj, k) => toggle({ label, value: obj[k], onChange: v => { obj[k] = v; commit(); } });
-  return { C, N, T };
+  return { N, T };
 }
 function panelStyle(L) {
-  const out = h('div', {}), { C, N, T } = fieldMakers(L);
+  const out = h('div', {}), { T } = fieldMakers(L);
   if (L.type === 'shape') {
     const s = L.shape;
-    out.append(section('Fill', T('Fill', s, 'fillOn'), C('Color', s, 'fill'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
-  } else if (L.type === 'text') out.append(section('Color', C('Fill', L.text, 'fill')));
+    out.append(section('Fill', T('Fill', s, 'fillOn'), keyColor(L, 'shape.fill', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'shape.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'shape.gradAngle', 'Angle', 0, 360) : null));
+  } else if (L.type === 'text') out.append(section('Color', keyColor(L, 'text.fill', 'Fill', 'fill-color')));
   else if (L.type === 'solid') {
     const s = L.solid;
-    out.append(section('Solid', C('Color', s, 'color'), T('Gradient', s, 'gradient'), s.gradient ? C('Color 2', s, 'fill2') : null, s.gradient ? N('Angle', s, 'gradAngle', 0, 360) : null));
+    out.append(section('Solid', keyColor(L, 'solid.color', 'Color', 'fill-color'), T('Gradient', s, 'gradient'), s.gradient ? keyColor(L, 'solid.fill2', 'Color 2') : null, s.gradient ? keyNum(L, 'solid.gradAngle', 'Angle', 0, 360) : null));
   } else if (L.type === 'draw') out.append(h('div', { class: 'hint' }, 'Drawing colours are picked per stroke in Edit Drawing.'), h('button', { class: 'act', onclick: () => openSub('draw') }, icon('freehand'), 'Edit Drawing'));
   else if (L.type === 'image' || L.type === 'video') out.append(h('div', { class: 'hint' }, 'Media layers keep their own colours — try Effects › Color Adjust.'));
   else out.append(h('div', { class: 'hint' }, 'Adjustment layers have no fill — add effects; they apply to everything below.'));
@@ -1253,8 +1262,8 @@ function panelEdit(L) {
       K('Width', 'w', 1, big, 'shape-w'), K('Height', 'h', 1, big, 'shape-h'),
       s.kind === 'rect' ? K('Corner', 'radius', 0, Math.max(1, Math.round(Math.min(valueAt(L, 'shape.w', S.t), valueAt(L, 'shape.h', S.t)) / 2)), 'shape-radius') : null,
       s.kind === 'star' || s.kind === 'polygon' ? N('Points', s, 'points', 3, 24) : null,
-      s.kind === 'star' ? N('Inner', s, 'inner', 0.05, 1, 0.01) : null,
-      s.kind === 'ring' ? N('Thickness', s, 'thickness', 0.02, 1, 0.01) : null),
+      s.kind === 'star' ? keyNum(L, 'shape.inner', 'Inner', 0.05, 1, 0.01) : null,
+      s.kind === 'ring' ? keyNum(L, 'shape.thickness', 'Thickness', 0.02, 1, 0.01) : null),
       h('div', { class: 'acts' }, h('button', { class: 'act', 'data-testid': 'to-points', onclick: () => {
         const n = s.kind === 'ellipse' || s.kind === 'ring' ? 24 : 16;
         s.pts = shapePoints(s, n).map(p => p.map(v => +v.toFixed(1))); s.kind = 'path'; s.closed = true; S.tab = 'points'; commit();
@@ -1266,7 +1275,7 @@ function panelEdit(L) {
     ta.addEventListener('change', () => { L.name = t.content.split('\n')[0].slice(0, 18) || 'Text'; commit(); });
     out.append(section('Text', ta,
       select({ label: 'Font', value: t.font, options: Object.keys(FONTS).map(f => [f, f]), onChange: v => { t.font = v; commit(); } }),
-      N('Size', t, 'size', 8, 800), N('Weight', t, 'weight', 100, 900, 100), N('Tracking', t, 'tracking', -0.2, 1, 0.01), N('Line Ht', t, 'lineHeight', 0.6, 3, 0.05),
+      keyNum(L, 'text.size', 'Size', 8, 800, 1, 'text-size'), N('Weight', t, 'weight', 100, 900, 100), keyNum(L, 'text.tracking', 'Tracking', -0.2, 1, 0.01, 'text-tracking'), keyNum(L, 'text.lineHeight', 'Line Ht', 0.6, 3, 0.05),
       chips([['left', 'Left'], ['center', 'Center'], ['right', 'Right']], t.align, v => { t.align = v; commit(); }),
       toggle({ label: 'Italic', value: t.italic, onChange: v => { t.italic = v; commit(); } })));
   } else if (L.type === 'image' || L.type === 'video') {
@@ -1285,16 +1294,14 @@ function panelEdit(L) {
 }
 function panelBorder(L) {
   const out = h('div', {});
-  const C = (label, obj, k) => color({ label, value: obj[k], onInput: liveSet(v => (obj[k] = v)), onChange: v => { obj[k] = v; commit(); } });
-  const N = (label, obj, k, min, max, step = 1, tid) => slider({ label, value: obj[k], min, max, step, testid: tid, onInput: liveSet(v => (obj[k] = v)), onChange: () => commit({ silent: true }) });
-  if (L.type === 'shape') out.append(section('Border', N('Width', L.shape, 'strokeW', 0, 120, 1, 'border-width'), C('Color', L.shape, 'stroke')));
-  else if (L.type === 'text') out.append(section('Border', N('Width', L.text, 'strokeW', 0, 60, 1, 'border-width'), C('Color', L.text, 'stroke')));
+  if (L.type === 'shape') out.append(section('Border', keyNum(L, 'shape.strokeW', 'Width', 0, 120, 1, 'border-width'), keyColor(L, 'shape.stroke', 'Color', 'border-color')));
+  else if (L.type === 'text') out.append(section('Border', keyNum(L, 'text.strokeW', 'Width', 0, 60, 1, 'border-width'), keyColor(L, 'text.stroke', 'Color', 'border-color')));
   if (L.type === 'adjust') { out.append(h('div', { class: 'hint' }, 'Adjustment layers have no border or shadow.')); return out; }
   const sh = L.shadow || (L.shadow = { on: false, color: '#000000', blur: 24, dx: 0, dy: 16, alpha: 0.6 });
   out.append(section('Shadow', toggle({ label: 'Shadow', value: sh.on, testid: 'shadow-on', onChange: v => { sh.on = v; commit(); } }),
-    sh.on ? C('Color', sh, 'color') : null, sh.on ? N('Blur', sh, 'blur', 0, 200) : null,
-    sh.on ? N('Offset X', sh, 'dx', -200, 200) : null, sh.on ? N('Offset Y', sh, 'dy', -200, 200) : null,
-    sh.on ? N('Opacity', sh, 'alpha', 0, 1, 0.01) : null));
+    sh.on ? keyColor(L, 'shadow.color', 'Color', 'shadow-color') : null, sh.on ? keyNum(L, 'shadow.blur', 'Blur', 0, 200, 1, 'shadow-blur') : null,
+    sh.on ? keyNum(L, 'shadow.dx', 'Offset X', -200, 200) : null, sh.on ? keyNum(L, 'shadow.dy', 'Offset Y', -200, 200) : null,
+    sh.on ? keyNum(L, 'shadow.alpha', 'Opacity', 0, 1, 0.01) : null));
   return out;
 }
 
