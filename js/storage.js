@@ -9,9 +9,9 @@ export function saveProject(p) {
   try {
     localStorage.setItem(PK(p.id), JSON.stringify(p));
     const idx = listProjects().filter(x => x.id !== p.id);
-    idx.unshift({ id: p.id, name: p.name, aspect: p.aspect, modified: p.modified, layers: p.layers.length });
+    idx.unshift({ id: p.id, name: p.name, aspect: p.aspect, modified: p.modified, layers: p.layers.length, kind: p.kind });
     localStorage.setItem(IDX, JSON.stringify(idx));
-    localStorage.setItem('kntc.last', p.id);
+    if (!p.kind) localStorage.setItem('kntc.last', p.id); // templates / elements never become the project that opens next time
     return true;
   } catch (e) { console.warn('save failed', e); return false; }
 }
