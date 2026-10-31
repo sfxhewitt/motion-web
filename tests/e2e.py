@@ -48,7 +48,8 @@ def run(pw, label, ctx_opts, mobile):
           and hm['pill'] == 'rgb(32, 34, 57)' and hm['pills'] == ['Projects', 'Your Templates', 'Elements', 'Cloud'] and hm['banner'] and hm['nav'] == ['Home', 'Tutorials', 'Projects', 'Templates']
           and hm['meta'] == ['9:16', '1080p', hm['meta'][2], '30fps'] and hm['meta'][2].endswith('kb') and hm['dur'] == '00:06:00' and hm['word'] == 'KINETIC', hm)
     pg.click('.h-nav [data-nav=tutorials]'); pg.wait_for_timeout(100)
-    check(f'[{label}] home: non-functional tabs say coming soon', 'coming soon' in (P("[...document.querySelectorAll('.toast')].map(t => t.textContent).join('|')") or ''))
+    check(f'[{label}] home: Tutorials tab opens the lessons', P("document.querySelectorAll('.tut').length") == 6 and P("document.querySelector('#homeHead').textContent") == 'Tutorials')
+    pg.click('.h-nav [data-nav=home]'); pg.wait_for_timeout(100)
     # banner Import opens the project-file picker; X dismisses (remembered)
     with pg.expect_file_chooser() as fc: pg.click('[data-testid=home-import]')
     check(f'[{label}] home: banner Import opens the project file picker', fc.value is not None)

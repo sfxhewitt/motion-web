@@ -42,7 +42,8 @@ Font: system sans (SF on iPhone). Icons: 24 viewBox, ~1.6px round-cap strokes.
 Tabs **Shape · Media · Audio · Object / Element · Template** (active = mint); right column **Freehand Drawing ·
 Vector Drawing · Text · ✕**. Shape = paged grey shape grid (2 x 15, own shape set). Media = import + project
 media; Audio = import audio files + project audio; Object = Solid Color, Adjustment, Camera / Empty Group / Null /
-Element (last four "coming soon"); Template = Demo project (+ "coming soon" browse).
+Element; Template = View All (five starter templates built for the project ratio, inserted as layers; Your Templates
+placed as nested elements) + Demo project.
 ### Layer selected — `data-mode=sel`
 Top bar: `<` · layer name · duplicate · trash · ⋯ (layer menu). The clip becomes a white pill with `<` / `>` trim
 caps; the row scrolls to the top. Tile grid: small tiles (speed — soon, trim start, split, trim end, mute), then
@@ -74,7 +75,7 @@ Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and 
 
 ## Knowingly different
 - Name, logo, icons and shape set are KINETIC's own; no watermark, music or template library.
-- The Templates browse, Your Templates, Cloud, Tutorials and Account entries are still "coming soon" toasts, because they need hosted content.
+- No hosted content: Templates are five built-in starters plus projects you save as templates; Tutorials are in-app written lessons with a "Try it" project; Cloud is a one-file backup / restore (keep it in iCloud Drive / Google Drive); Account is a local profile with storage stats, backup and erase. Nothing is "coming soon" any more.
 - 3D layers are drawn as perspective-warped planes (a triangle mesh on the 2D canvas). Selection handles stay 2D.
 - In nested projects (Element / Project layers), video shows the frame the source element is on and isn't seeked per frame.
 - Bezier points use mirrored (smooth) handles; there are no broken / independent handles.

@@ -6,6 +6,7 @@ import { Renderer, BLEND_MODES, FONTS, media, evalTransform, layerMatrix, evalSh
 import * as store from './storage.js';
 import { exportVideo, supportedFormats, exportSize } from './export.js';
 import { $, h, slider, color, toggle, select, chips, section, toast, icon } from './ui.js';
+import { TEMPLATES, TUTORIALS } from './templates.js';
 
 // ---------------- state ----------------
 // tab: null (nothing / tile grid when a layer is selected) | 'add' (add sheet) | a sub panel id (see SUB_TITLE)
@@ -26,7 +27,6 @@ const P = () => S.project;
 const selLayer = () => P()?.layers.find(l => l.id === S.sel) || null;
 const isSub = () => !!S.tab && S.tab !== 'add';
 const mode = () => (isSub() ? 'sub' : S.sel ? 'sel' : 'none');
-const soon = what => () => toast((what ? what + ': ' : '') + 'coming soon');
 
 function commit(opts = {}) {
   history.push(P());
@@ -209,9 +209,11 @@ function insertElement(el) {
   P().layers.unshift(...made); S.sel = made[0].id; S.multi.clear(); S.tab = null; commit(); toast('Added ' + el.name);
 }
 function openElements() {
-  const els = myElements(), projs = store.listProjects().filter(x => x.id !== P().id);
+  const els = myElements(), all = store.listProjects().filter(x => x.id !== P().id), elProjs = all.filter(x => x.kind === 'element'), projs = all.filter(x => !x.kind);
   const row = (label, sub, fn, tid, del) => h('div', { class: 'el-row' }, h('button', { class: 'act wide', 'data-testid': tid, onclick: fn }, h('b', {}, label), h('em', {}, sub)), del || null);
   openDialog('Element / Project', h('div', { class: 'plist', 'data-testid': 'elements' },
+    elProjs.length ? h('div', { class: 'sec-h' }, 'Elements (Create › Element)') : null,
+    ...elProjs.map(x => row(x.name, `${x.aspect} · ${x.layers} layers`, () => { dlg.close(); addComp(x.id); }, 'comp-' + x.id)),
     h('div', { class: 'sec-h' }, 'My Elements'),
     els.length ? null : h('div', { class: 'hint' }, 'Save a layer or group with ⋯ › Save to My Elements to reuse it here.'),
     ...els.map(el => row(el.name, `${el.layers.length} layer${el.layers.length > 1 ? 's' : ''}`, () => { dlg.close(); insertElement(el); }, 'el-' + el.id,
@@ -1285,6 +1287,7 @@ function renderPanel() {
   body.scrollTop = st;
 }
 
+const noVisual = L => () => toast('Not available for ' + (L.type === 'audio' ? 'audio' : 'adjustment') + ' layers');
 function tileGrid(L) {
   const T = (id, ic, label, fn, cls = '') => h('button', { class: 'tile ' + cls, 'data-testid': 'tab-' + id, title: label || id, onclick: fn }, icon(ic), label ? h('span', {}, label) : null);
   const open = id => () => openSub(id);
@@ -1298,9 +1301,9 @@ function tileGrid(L) {
       h('div', { class: 'tgroup' }, T('trim-start', 'splitl', '', () => splitAt(L, 'start'), 'sm'), T('split', 'split', '', () => splitAt(L, 'split'), 'sm'), T('trim-end', 'splitr', '', () => splitAt(L, 'end'), 'sm')),
       T('mute', muted ? 'mute' : hasSound ? 'sound' : 'mute', '', () => { if (!hasSound) return toast('This layer has no sound'); delete L.keys['media.volume']; L.media.volume = muted ? 1 : 0; commit(); }, 'sm corner' + (hasSound ? '' : ' off'))),
     h('div', { class: 'trow three' },
-      T('style', 'fill', 'Color & Fill', visual ? open('style') : soon(), visual ? '' : 'off'),
-      T('border', 'border', 'Border & Shadow', drawable ? open('border') : soon(), drawable ? '' : 'off'),
-      T('blend', 'blend', 'Blending & Opacity', visual ? open('blend') : soon(), visual ? '' : 'off')),
+      T('style', 'fill', 'Color & Fill', visual ? open('style') : noVisual(L), visual ? '' : 'off'),
+      T('border', 'border', 'Border & Shadow', drawable ? open('border') : noVisual(L), drawable ? '' : 'off'),
+      T('blend', 'blend', 'Blending & Opacity', visual ? open('blend') : noVisual(L), visual ? '' : 'off')),
     h('div', { class: 'trow four' },
       T('layer', 'move', 'Move & Transform', open('layer'), visual ? '' : 'off'),
       T('edit', editIc, editLabel, open('edit')),
@@ -1694,7 +1697,7 @@ function sheetContent() {
       tile('nullobj', 'Null', () => addLayer(makeLayer(P(), 'null')), 'add-null'),
       tile('element', 'Element / Project', openElements, 'add-element'));
     case 'template': return h('div', { class: 'sh-tpl' },
-      tile('grid', 'View All', soon('Templates'), 'tpl-all'),
+      tile('grid', 'View All', openTemplates, 'tpl-all'),
       tile('demo', 'KINETIC Neon Demo', () => { if (confirm('Replace this project with the KINETIC demo?')) setProject(demoProject(P().aspect)); }, 'add-demo'));
     default: {
       const pages = [];
@@ -1719,6 +1722,18 @@ function renderSheet() {
       side('close', '', () => { S.tab = null; refreshAll(); }, 'sheet-close')));
 }
 function openSheet(tabId) { S.multi.clear(); if (S.sel) { S.sel = null; S.selKeys.clear(); } S.tab = 'add'; if (tabId) S.addTab = tabId; refreshAll(); }
+
+// + › Template › View All: starter templates (built for this project's ratio) and Your Templates, placed into the open project
+function openTemplates() {
+  const mine = store.listProjects().filter(x => x.kind === 'template' && x.id !== P().id);
+  const card = (name, desc, th, fn, tid) => h('button', { class: 'tcard', 'data-testid': tid, onclick: fn }, h('span', { class: 'tc-th' }, th), h('b', {}, name), desc ? h('em', {}, desc) : null);
+  openDialog('Templates', h('div', { class: 'plist', 'data-testid': 'templates' },
+    h('div', { class: 'sec-h' }, 'Starter templates · added as layers'),
+    h('div', { class: 'tgrid' }, ...TEMPLATES.map(t => { const p = t.build(P().aspect); return card(t.name, t.desc, thumbFor(p), () => { dlg.close(); insertElement({ name: t.name, layers: p.layers }); }, 'tpl-' + t.id); })),
+    h('div', { class: 'sec-h' }, 'Your templates · placed as an element'),
+    mine.length ? h('div', { class: 'tgrid' }, ...mine.map(x => { const p = store.loadProject(x.id); return card(x.name, `${x.aspect} · ${x.layers} layers`, p ? thumbFor(p) : '', () => { dlg.close(); addComp(x.id); }, 'tpl-mine-' + x.id); }))
+      : h('div', { class: 'hint' }, 'Save a project as a template from Home › Projects › ⋯. New projects can start from it (Home › Your Templates).')));
+}
 
 // ---- ⋯ layer menu: Alight-style dropdown anchored under the ⋯ button (tap outside to close) ----
 // colour tags shown on the layer's timeline clip (sampled from the reference swatches)
@@ -1970,41 +1985,174 @@ function thumbFor(p) {
   return c;
 }
 function setThemeColor(c) { document.querySelector('meta[name=theme-color]')?.setAttribute('content', c); }
+// ---- Home: Projects | Your Templates | Elements | Cloud pills, plus Tutorials / Templates from the bottom bar ----
+let homeTab = 'projects';
+const HOME_HEAD = { projects: 'Your projects', templates: 'Templates', elements: 'Elements', cloud: 'Cloud backup', tutorials: 'Tutorials' };
+function setHomeTab(tab) { homeTab = tab; showHome(); if (tab !== 'projects') $('#homeScroll').scrollTo({ top: 0 }); }
+// project card as on the Projects tab; `extra` adds a badge, `menu` builds the ⋯ dropdown
+function projectCard(x, pr, open, menu, badge) {
+  const th = h('span', { class: 'pc-th' + (pr && pr.bg === 'transparent' ? ' checker' : '') });
+  if (pr) {
+    const c = thumbFor(pr), blur = document.createElement('canvas');
+    blur.width = c.width; blur.height = c.height; blur.getContext('2d').drawImage(c, 0, 0); blur.className = 'pc-blur';
+    th.append(blur, c, h('span', { class: 'pc-dur', 'data-testid': 'home-dur' }, fmtDur(pr.duration)));
+  }
+  const meta = (ic, t, tid) => h('span', { class: 'pc-m', 'data-testid': tid }, icon(ic), t);
+  return h('div', { class: 'pcard', 'data-testid': 'home-project' },
+    h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, th,
+      h('span', { class: 'pc-tx' }, h('b', { 'data-testid': 'home-name' }, x.name, badge ? h('i', { class: 'tag pc-badge' }, badge) : null),
+        pr ? h('span', { class: 'pc-meta' }, meta('ratio', pr.aspect, 'meta-ratio'), meta('resbox', Math.min(pr.w, pr.h) + 'p', 'meta-res'),
+          meta('folder', fmtBytes(store.projectBytes(x.id)), 'meta-size'), meta('fps', pr.fps + 'fps', 'meta-fps')) : '')),
+    menu ? h('button', { class: 'pc-more', title: 'More', 'aria-label': 'More', 'data-testid': 'home-more', onclick: e => { e.stopPropagation(); openHomeMenu(e.currentTarget, menu); } }, icon('dots')) : null);
+}
+const openStored = id => { const q = store.loadProject(id); if (q) { setProject(q); hideHome(); } };
+function homeProjects() {
+  const list = store.listProjects().filter(x => !x.kind);
+  return list.length ? list.map(x => projectCard(x, store.loadProject(x.id), () => openStored(x.id), [
+    ['rename', 'Rename', 'home-rename', () => renameProject(x.id)], ['dup', 'Duplicate', 'home-duplicate', () => duplicateProject(x.id)],
+    ['template', 'Save as template', 'home-template', () => saveAsTemplate(x.id)], ['element', 'Make element', 'home-element', () => makeElement(x.id)],
+    ['trash', 'Delete', 'home-delete', () => deleteProjectUI(x.id), 'danger']])) : [h('div', { class: 'h-empty' }, 'No projects yet. Tap + to create one.')];
+}
+// Your Templates: projects saved as templates (Projects › ⋯ › Save as template) and the built-in starters; Use makes a new project from one
+function homeTemplates() {
+  const mine = store.listProjects().filter(x => x.kind === 'template');
+  const use = p => { const c = clone(p); c.id = uid(); delete c.kind; c.created = c.modified = Date.now(); c.name = uniqueName(p.name); setProject(c); hideHome(); toast('Created ' + c.name + ' from template'); };
+  const builtin = TEMPLATES.map(t => { const p = t.build('9:16'); p.id = 'tpl-' + t.id;
+    return h('button', { class: 'tcard', 'data-testid': 'tpl-' + t.id, onclick: () => use(t.build(lastAspect())) }, h('span', { class: 'tc-th' }, thumbFor(p)), h('b', {}, t.name), h('em', {}, t.desc)); });
+  return [h('h3', { class: 'h-sub' }, 'Your templates'),
+    ...(mine.length ? mine.map(x => projectCard(x, store.loadProject(x.id), () => { const p = store.loadProject(x.id); if (p) use(p); }, [
+      ['plus', 'Use template', 'home-use', () => { const p = store.loadProject(x.id); if (p) use(p); }], ['editshape', 'Edit template', 'home-edit-tpl', () => openStored(x.id)],
+      ['rename', 'Rename', 'home-rename', () => renameProject(x.id)], ['trash', 'Delete', 'home-delete', () => deleteProjectUI(x.id), 'danger']], 'TEMPLATE'))
+      : [h('div', { class: 'h-note' }, 'Save any project as a template from its ⋯ menu on the Projects tab. Templates keep their layers, keyframes and effects so you can start new projects from them.')]),
+    h('h3', { class: 'h-sub' }, 'Starter templates'), h('div', { class: 'tgrid', 'data-testid': 'tpl-grid' }, builtin)];
+}
+// Elements: element projects (Create › Element) and layers saved with ⋯ › Save to My Elements
+function homeElements() {
+  const projs = store.listProjects().filter(x => x.kind === 'element'), els = myElements();
+  const delEl = id => { localStorage.setItem('kntc.elements', JSON.stringify(myElements().filter(x => x.id !== id))); showHome(); };
+  return [h('h3', { class: 'h-sub' }, 'Element projects'),
+    ...(projs.length ? projs.map(x => projectCard(x, store.loadProject(x.id), () => openStored(x.id), [
+      ['rename', 'Rename', 'home-rename', () => renameProject(x.id)], ['dup', 'Duplicate', 'home-duplicate', () => duplicateProject(x.id)],
+      ['trash', 'Delete', 'home-delete', () => deleteProjectUI(x.id), 'danger']], 'ELEMENT'))
+      : [h('div', { class: 'h-note' }, 'Tap + and choose Element to build a reusable composition. Elements have a transparent background and can be placed into any project from + › Object › Element / Project.')]),
+    h('h3', { class: 'h-sub' }, 'My Elements'),
+    ...(els.length ? els.map(el => h('div', { class: 'ecard', 'data-testid': 'my-element' }, h('span', { class: 'ec-ic' }, icon(TYPE_ICON[el.layers[0]?.type] || 'layer')),
+      h('span', { class: 'ec-tx' }, h('b', {}, el.name), h('em', {}, `${el.layers.length} layer${el.layers.length > 1 ? 's' : ''} · saved ${new Date(el.created).toLocaleDateString()}`)),
+      h('button', { class: 'mini', title: 'Delete', 'aria-label': 'Delete', 'data-testid': 'my-element-delete', onclick: () => { if (confirm('Delete ' + el.name + '?')) delEl(el.id); } }, icon('trash'))))
+      : [h('div', { class: 'h-note' }, 'In the editor, select a layer or group and choose ⋯ › Save to My Elements. Saved elements can be added to any project from + › Object › Element / Project.')])];
+}
+// Cloud: KINETIC has no account server, so "cloud" is a backup file you keep in iCloud Drive / Google Drive and restore on any device
+function homeCloud() {
+  const last = +localStorage.getItem('kntc.backupAt') || 0, n = store.listProjects().length;
+  return [h('div', { class: 'cloud', 'data-testid': 'cloud' },
+    h('div', { class: 'cl-hero' }, icon('up'), h('b', {}, 'Back up everything'), h('p', {}, `${n} project${n === 1 ? '' : 's'}, your templates, elements and media go into one .kntc-backup.json file. Save it to iCloud Drive, Google Drive or Files, then restore it on any device.`),
+      h('button', { class: 'hb-btn', 'data-testid': 'cloud-backup', onclick: backupAll }, 'Back up'),
+      h('small', { 'data-testid': 'cloud-last' }, last ? 'Last backup ' + new Date(last).toLocaleString() : 'No backup yet')),
+    h('div', { class: 'cl-hero' }, icon('down'), h('b', {}, 'Restore a backup'), h('p', {}, 'Projects in the file are added to this device. A project with the same id is replaced by the backup copy.'),
+      h('button', { class: 'hb-btn', 'data-testid': 'cloud-restore', onclick: () => $('#fileJson').click() }, 'Restore')))];
+}
+function homeTutorials() {
+  return [h('div', { class: 'tuts', 'data-testid': 'tutorials' }, ...TUTORIALS.map((t, i) => {
+    const card = h('details', { class: 'tut', 'data-testid': 'tut-' + t.id }, h('summary', {}, h('span', { class: 'tut-n' }, String(i + 1)), h('b', {}, t.title), h('em', {}, t.mins + ' min')),
+      h('ol', {}, ...t.steps.map(st => h('li', {}, st))),
+      h('button', { class: 'hb-btn', 'data-testid': 'tut-try-' + t.id, onclick: () => tryTutorial(t) }, 'Try it'));
+    return card; }))];
+}
+function tryTutorial(t) {
+  const tpl = TEMPLATES.find(x => x.id === t.project);
+  const p = tpl ? tpl.build(lastAspect()) : newProject('9:16', uniqueName('Tutorial'), { res: 1080, bg: BG_PRESETS[0][0] });
+  if (tpl) p.name = uniqueName(t.title);
+  setProject(p); hideHome(); toast(t.title + ': ' + t.steps[0], 4000);
+}
+const lastAspect = () => { const x = store.listProjects().find(x => !x.kind); return x && ASPECTS[x.aspect] ? x.aspect : '9:16'; };
+const uniqueName = base => { const names = new Set(store.listProjects().map(x => x.name)); if (!names.has(base)) return base; let n = 2; while (names.has(`${base} ${n}`)) n++; return `${base} ${n}`; };
+function saveAsTemplate(id) {
+  const q = store.loadProject(id); if (!q) return;
+  const c = clone(q); c.id = uid(); c.kind = 'template'; c.created = c.modified = Date.now();
+  if (!store.saveProject(c)) return toast('Storage is full');
+  toast('Saved to Your Templates'); setHomeTab('templates');
+}
+function makeElement(id) {
+  const q = store.loadProject(id); if (!q) return;
+  const c = clone(q); c.id = uid(); c.kind = 'element'; c.bg = 'transparent'; c.created = c.modified = Date.now();
+  if (!store.saveProject(c)) return toast('Storage is full');
+  toast(q.name + ' copied to Elements'); setHomeTab('elements');
+}
+// one file with every stored project (media as data URLs), the saved layer elements and the profile
+async function backupAll() {
+  const projects = [];
+  for (const x of store.listProjects()) { const p = store.loadProject(x.id); if (!p) continue; p.media = {};
+    for (const L of p.layers) if (L.media && !p.media[L.media.id]) { const b = await store.getMedia(L.media.id); if (b) p.media[L.media.id] = await store.blobToDataURL(b); }
+    for (const f of p.fonts || []) { const b = await store.getMedia(f.id); if (b) p.media[f.id] = await store.blobToDataURL(b); }
+    projects.push(p); }
+  const bk = { backup: 1, app: 'KINETIC', at: Date.now(), projects, elements: myElements(), profile: localStorage.getItem('kntc.profile') || '' };
+  const blob = new Blob([JSON.stringify(bk)], { type: 'application/json' });
+  const f = new File([blob], `kinetic_${new Date().toISOString().slice(0, 10)}.kntc-backup.json`, { type: 'application/json' });
+  localStorage.setItem('kntc.backupAt', String(bk.at));
+  if (navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], title: 'KINETIC backup' }); } catch (e) { if (e.name !== 'AbortError') download(blob, f.name); } }
+  else download(blob, f.name);
+  toast(`Backed up ${projects.length} project${projects.length === 1 ? '' : 's'}`); if (!$('#home').hidden) showHome();
+}
+async function restoreBackup(bk) {
+  let n = 0;
+  for (const p of bk.projects || []) {
+    if (!p.layers || !p.w) continue;
+    if (p.media) { for (const [id, url] of Object.entries(p.media)) await store.putMedia(id, await store.dataURLToBlob(url)); delete p.media; }
+    if (!store.saveProject(p)) { toast('Storage full after ' + n + ' projects'); break; } n++;
+  }
+  if (bk.elements?.length) { const have = new Set(myElements().map(e => e.id)); const els = [...bk.elements.filter(e => !have.has(e.id)), ...myElements()]; try { localStorage.setItem('kntc.elements', JSON.stringify(els.slice(0, 60))); } catch {} }
+  if (bk.profile && !localStorage.getItem('kntc.profile')) localStorage.setItem('kntc.profile', bk.profile);
+  if (P()) { const q = store.loadProject(P().id); if (q) setProject(q); } // the open project may have been replaced
+  toast(`Restored ${n} project${n === 1 ? '' : 's'}`); if (!$('#home').hidden) showHome();
+}
+// ---- Account: a local profile (no sign-in: KINETIC keeps everything on this device), storage use, backup, reset ----
+const profile = () => { try { return JSON.parse(localStorage.getItem('kntc.profile')) || {}; } catch { return {}; } };
+const initials = n => (n || '').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+function renderAvatar() { const n = profile().name; $('#homeAvatar').replaceChildren(n ? h('b', {}, initials(n)) : icon('user')); }
+function openAccount() {
+  const pf = profile(), list = store.listProjects(), bytes = list.reduce((a, x) => a + store.projectBytes(x.id), 0);
+  const name = h('input', { class: 'h-input', value: pf.name || '', placeholder: 'Your name', maxlength: 40, 'data-testid': 'account-name' });
+  name.onchange = () => { localStorage.setItem('kntc.profile', JSON.stringify({ ...profile(), name: name.value.trim() })); renderAvatar(); av.replaceChildren(name.value.trim() ? initials(name.value) : icon('user')); };
+  const av = h('span', { class: 'ac-av' }, pf.name ? initials(pf.name) : icon('user'));
+  const stat = (k, v, tid) => h('div', { class: 'ac-stat', 'data-testid': tid }, h('b', {}, v), h('span', {}, k));
+  const usage = (async () => { try { const e = await navigator.storage?.estimate?.(); return e ? fmtBytes(e.usage || 0) : '—'; } catch { return '—'; } })();
+  const mediaStat = stat('media & fonts', '…', 'account-media'); usage.then(v => (mediaStat.firstChild.textContent = v));
+  openDialog('Account', h('div', { class: 'plist account', 'data-testid': 'account' },
+    h('div', { class: 'ac-head' }, av, h('div', { class: 'ac-id' }, name, h('small', {}, 'KINETIC Free · every feature unlocked, no sign-in needed'))),
+    h('div', { class: 'ac-stats' }, stat('projects', list.filter(x => !x.kind).length, 'account-projects'), stat('templates', list.filter(x => x.kind === 'template').length, 'account-templates'),
+      stat('elements', list.filter(x => x.kind === 'element').length + myElements().length, 'account-elements'), stat('project data', fmtBytes(bytes), 'account-bytes'), mediaStat),
+    h('button', { class: 'act wide', 'data-testid': 'account-backup', onclick: () => { dlg.close(); backupAll(); } }, icon('up'), 'Back up everything'),
+    h('button', { class: 'act wide', onclick: () => { dlg.close(); $('#fileJson').click(); } }, icon('down'), 'Restore a backup'),
+    h('button', { class: 'act wide danger', 'data-testid': 'account-reset', onclick: resetApp }, icon('trash'), 'Erase all data on this device'),
+    h('div', { class: 'hint small' }, 'Projects, templates and elements live in this browser. Back up before clearing site data or switching devices.')));
+  setTimeout(() => name.focus(), 30);
+}
+async function resetApp() {
+  if (!confirm('Erase every project, template, element and media file stored on this device? This cannot be undone.')) return;
+  localStorage.clear();
+  try { await new Promise((r, j) => { const q = indexedDB.deleteDatabase('kntc-media'); q.onsuccess = q.onblocked = r; q.onerror = () => j(q.error); }); } catch {}
+  location.href = location.pathname;
+}
 function showHome() {
   if (S.playing) togglePlay(false);
   if (P()) store.saveProject(P());
-  closeHomeMenu();
-  const list = store.listProjects();
-  $('#homeBanner').hidden = localStorage.getItem('kntc.bannerX') === '1';
-  $('#homeList').replaceChildren(...(list.length ? list.map(x => {
-    const pr = store.loadProject(x.id);
-    const open = () => { const q = store.loadProject(x.id); if (q) { setProject(q); hideHome(); } };
-    const th = h('span', { class: 'pc-th' });
-    if (pr) {
-      const c = thumbFor(pr), blur = document.createElement('canvas');
-      blur.width = c.width; blur.height = c.height; blur.getContext('2d').drawImage(c, 0, 0); blur.className = 'pc-blur';
-      th.append(blur, c, h('span', { class: 'pc-dur', 'data-testid': 'home-dur' }, fmtDur(pr.duration)));
-    }
-    const meta = (ic, t, tid) => h('span', { class: 'pc-m', 'data-testid': tid }, icon(ic), t);
-    return h('div', { class: 'pcard', 'data-testid': 'home-project' },
-      h('button', { class: 'pc-main', onclick: open, 'data-testid': 'home-open' }, th,
-        h('span', { class: 'pc-tx' }, h('b', { 'data-testid': 'home-name' }, x.name),
-          pr ? h('span', { class: 'pc-meta' }, meta('ratio', pr.aspect, 'meta-ratio'), meta('resbox', Math.min(pr.w, pr.h) + 'p', 'meta-res'),
-            meta('folder', fmtBytes(store.projectBytes(x.id)), 'meta-size'), meta('fps', pr.fps + 'fps', 'meta-fps')) : '')),
-      h('button', { class: 'pc-more', title: 'More', 'aria-label': 'More', 'data-testid': 'home-more', onclick: e => { e.stopPropagation(); openHomeMenu(e.currentTarget, x); } }, icon('dots')));
-  }) : [h('div', { class: 'h-empty' }, 'No projects yet. Tap + to create one.')]));
+  closeHomeMenu(); renderAvatar();
+  const tab = homeTab, pills = tab !== 'tutorials';
+  $('#homeBanner').hidden = !pills || localStorage.getItem('kntc.bannerX') === '1';
+  $('.h-pills').hidden = !pills;
+  document.querySelectorAll('#home [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('#home [data-nav]').forEach(b => b.classList.toggle('on', b.dataset.nav === { projects: 'home', templates: 'templates', tutorials: 'tutorials' }[tab]));
+  $('#homeHead').textContent = HOME_HEAD[tab];
+  $('#homeList').replaceChildren(...({ projects: homeProjects, templates: homeTemplates, elements: homeElements, cloud: homeCloud, tutorials: homeTutorials }[tab])());
   $('#home').hidden = false; document.body.classList.add('home-open'); setThemeColor('#f5f5f5');
 }
 function hideHome() { closeHomeMenu(); $('#home').hidden = true; document.body.classList.remove('home-open'); setThemeColor('#191b27'); requestAnimationFrame(() => { layoutStage(); drawFrame(); renderTimeline(); }); }
 let homeMenu = null;
 function closeHomeMenu() { if (homeMenu) { homeMenu.remove(); homeMenu = null; } }
-function openHomeMenu(btn, x) {
+function openHomeMenu(btn, items) {
   closeHomeMenu();
   const act = (ic, t, tid, fn, cls = '') => h('button', { class: cls, 'data-testid': tid, onclick: () => { closeHomeMenu(); fn(); } }, icon(ic), t);
-  homeMenu = h('div', { class: 'h-menu', 'data-testid': 'home-menu' },
-    act('rename', 'Rename', 'home-rename', () => renameProject(x.id)),
-    act('dup', 'Duplicate', 'home-duplicate', () => duplicateProject(x.id)),
-    act('trash', 'Delete', 'home-delete', () => deleteProjectUI(x.id), 'danger'));
+  homeMenu = h('div', { class: 'h-menu', 'data-testid': 'home-menu' }, ...items.map(a => act(...a)));
   const r = btn.getBoundingClientRect();
   homeMenu.style.right = Math.max(8, innerWidth - r.right) + 'px';
   $('#home').append(homeMenu);
@@ -2028,26 +2176,28 @@ function duplicateProject(id) {
 function deleteProjectUI(id) {
   const x = store.listProjects().find(v => v.id === id); if (!x || !confirm('Delete ' + x.name + '?')) return;
   store.deleteProject(id);
-  if (P() && id === P().id) { const rest = store.listProjects()[0]; setProject((rest && store.loadProject(rest.id)) || newProject('9:16', nextProjectName(), { res: 1080, bg: BG_PRESETS[0][0] })); }
+  if (P() && id === P().id) { const rest = store.listProjects().find(v => !v.kind); setProject((rest && store.loadProject(rest.id)) || newProject('9:16', nextProjectName(), { res: 1080, bg: BG_PRESETS[0][0] })); }
   showHome();
 }
 function openHomeSettings() {
   openDialog('Settings', h('div', { class: 'plist' },
-    h('button', { class: 'act wide', onclick: () => { dlg.close(); $('#fileJson').click(); } }, icon('up'), 'Import project (.json)'),
+    h('button', { class: 'act wide', onclick: () => { dlg.close(); $('#fileJson').click(); } }, icon('up'), 'Import project or backup (.json)'),
+    h('button', { class: 'act wide', onclick: () => { dlg.close(); setHomeTab('cloud'); } }, icon('down'), 'Back up everything'),
+    h('button', { class: 'act wide', onclick: () => { dlg.close(); openAccount(); } }, icon('user'), 'Account'),
     h('div', { class: 'hint small' }, 'KINETIC saves projects on this device. Add it to the Home Screen from Safari’s share menu for full-screen use.')));
 }
 
 // ---------------- Create sheet (+ on home): name, ratio, resolution, frame rate, background ----------------
 const BG_PRESETS = [['#d9d9d9', 'Light Grey'], ['#ffffff', 'White'], ['#3a3b44', 'Dark Grey'], ['#000000', 'Black'], ['#05060a', 'Midnight']];
 const CREATE_RATIOS = [['16:9', 56, 30], ['9:16', 31, 54], ['4:5', 36, 45], ['1:1', 36, 36], ['4:3', 50, 37]];
-function nextProjectName() {
-  const names = new Set(store.listProjects().map(x => x.name));
-  let n = store.listProjects().length + 1; while (names.has('Project Name ' + n)) n++;
-  return 'Project Name ' + n;
+function nextProjectName(element = false) {
+  const all = store.listProjects(), mine = all.filter(x => !!x.kind === element && (!element || x.kind === 'element')), names = new Set(all.map(x => x.name)), base = element ? 'Element ' : 'Project Name ';
+  let n = mine.length + 1; while (names.has(base + n)) n++;
+  return base + n;
 }
-function openCreate() {
+function openCreate(kind = 'project') {
   if (dlg.open) dlg.close();
-  const st = { name: nextProjectName(), aspect: '9:16', res: 1080, fps: 30, bg: BG_PRESETS[0][0], cw: 2, ch: 1 };
+  const st = { kind: 'project', name: nextProjectName(), aspect: '9:16', res: 1080, fps: 30, bg: BG_PRESETS[0][0], cw: 2, ch: 1 };
   const root = $('#create');
   const aspect = () => (st.aspect === 'custom' ? `${st.cw}:${st.ch}` : st.aspect);
   const sizeTx = h('small', { 'data-testid': 'create-size' });
@@ -2080,22 +2230,26 @@ function openCreate() {
   const row = (label, sub, ctl) => h('div', { class: 'cr-row' }, h('div', { class: 'cr-lab' }, h('b', {}, label), sub || ''), ctl);
   const close = () => { root.classList.remove('show'); setTimeout(() => { if (!root.classList.contains('show')) root.hidden = true; }, 220); };
   const go = () => {
-    const p = newProject(aspect(), (st.name || '').trim() || nextProjectName(), { res: st.res, fps: st.fps, bg: st.bg });
+    const el = st.kind === 'element';
+    const p = newProject(aspect(), (st.name || '').trim() || nextProjectName(el), { res: st.res, fps: st.fps, bg: el ? 'transparent' : st.bg });
+    if (el) p.kind = 'element'; // a reusable composition: transparent, listed under Elements, placed into projects from + › Object › Element
     root.classList.remove('show'); root.hidden = true;
     setProject(p); hideHome(); toast('Created ' + p.name);
   };
+  const segBtns = [], bgRow = row('Background', '', bgDD), goBtn = h('button', { class: 'cr-go', 'data-testid': 'create-go', onclick: go }, 'Create from scratch');
+  const pickKind = k => { st.kind = k; segBtns.forEach(b => b.classList.toggle('on', b.dataset.k === k)); bgRow.hidden = k === 'element'; goBtn.textContent = k === 'element' ? 'Create element' : 'Create from scratch';
+    if (!name.value || /^(Project Name|Element) \d+$/.test(name.value)) name.value = st.name = nextProjectName(k === 'element'); };
+  const seg = (k, label, ic) => { const b = h('button', { 'data-k': k, 'data-testid': 'create-seg-' + k, onclick: () => pickKind(k) }, label, ic ? icon(ic) : null); segBtns.push(b); return b; };
   root.replaceChildren(h('div', { class: 'cr-dim', onclick: close }),
     h('div', { class: 'cr-sheet', role: 'dialog', 'aria-label': 'Create' },
       h('div', { class: 'cr-head' }, h('button', { class: 'cr-x', title: 'Close', 'aria-label': 'Close', 'data-testid': 'create-close', onclick: close }, icon('close')), h('h2', {}, 'Create')),
       h('div', { class: 'cr-body' },
-        h('div', { class: 'cr-seg' }, h('button', { class: 'on', 'data-testid': 'create-seg-project' }, 'Project'),
-          h('button', { 'data-testid': 'create-seg-element', onclick: () => toast('Elements: coming soon') }, 'Element', icon('info'))),
+        h('div', { class: 'cr-seg' }, seg('project', 'Project'), seg('element', 'Element', 'info')),
         nameRow, ratios, custom,
         row('Resolution', sizeTx, dd('create-res', st.res, RESOLUTIONS, v => { st.res = +v; updSize(); })),
         row('Frame Rate', '', dd('create-fps', st.fps, [24, 25, 30, 48, 50, 60].map(f => [f, f + ' fps']), v => (st.fps = +v))),
-        row('Background', '', bgDD), bgPick,
-        h('button', { class: 'cr-go', 'data-testid': 'create-go', onclick: go }, 'Create from scratch'))));
-  pickRatio(st.aspect);
+        bgRow, bgPick, goBtn)));
+  pickRatio(st.aspect); pickKind(kind);
   root.hidden = false; requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('show')));
 }
 
@@ -2205,6 +2359,7 @@ async function exportJSON() {
 async function importJSON(file) {
   try {
     const p = JSON.parse(await file.text());
+    if (p.backup && Array.isArray(p.projects)) return restoreBackup(p);
     if (!p.layers || !p.w) throw new Error('not a project');
     if (p.media) { for (const [id, url] of Object.entries(p.media)) await store.putMedia(id, await store.dataURLToBlob(url)); delete p.media; }
     p.id = uid(); setProject(p); hideHome(); toast('Project loaded');
@@ -2288,12 +2443,14 @@ function buildChrome() {
   $('#btnPtAdd').onclick = placePoint;
   $('#fab').onclick = () => openSheet();
   $('#homeNew').onclick = () => openCreate(); $('#homeMenu').onclick = openHomeSettings;
-  $('#homeAvatar').onclick = soon('Account');
+  $('#homeAvatar').onclick = openAccount;
   $('#homeImport').onclick = () => $('#fileJson').click();
   $('#homeBannerX').onclick = () => { localStorage.setItem('kntc.bannerX', '1'); $('#homeBanner').hidden = true; };
-  document.querySelectorAll('#home [data-soon]').forEach(b => (b.onclick = soon(b.dataset.soon)));
-  document.querySelector('#home [data-nav=projects]').onclick = () => $('#homeScroll').scrollTo({ top: $('.h-head').offsetTop - 12, behavior: 'smooth' });
-  document.querySelector('#home [data-nav=home]').onclick = () => $('#homeScroll').scrollTo({ top: 0, behavior: 'smooth' });
+  document.querySelectorAll('#home [data-tab]').forEach(b => (b.onclick = () => setHomeTab(b.dataset.tab)));
+  document.querySelector('#home [data-nav=projects]').onclick = () => { setHomeTab('projects'); $('#homeScroll').scrollTo({ top: $('.h-head').offsetTop - 12, behavior: 'smooth' }); };
+  document.querySelector('#home [data-nav=home]').onclick = () => { setHomeTab('projects'); $('#homeScroll').scrollTo({ top: 0, behavior: 'smooth' }); };
+  document.querySelector('#home [data-nav=templates]').onclick = () => setHomeTab('templates');
+  document.querySelector('#home [data-nav=tutorials]').onclick = () => setHomeTab('tutorials');
   $('#home').addEventListener('pointerdown', e => { if (homeMenu && !homeMenu.contains(e.target) && !e.target.closest('.pc-more')) closeHomeMenu(); });
   $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
   $('#btnPlay').onclick = () => togglePlay();
@@ -2349,7 +2506,7 @@ function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
   // test / debug hook
   window.__app = { showHome, hideHome, S, get project() { return P(); }, seek, togglePlay, renderer, commit, refreshAll, setProject, demoProject, exportVideo, supportedFormats, EFFECTS, makeEffect, searchEffects, presetsFor, applyPreset, openBrowser, openEaseFor, propLabel, evalShape,
-    importFont, addMarker, saveElement, insertElement, addComp, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
+    importFont, addMarker, saveElement, insertElement, addComp, setHomeTab, openTemplates, openAccount, backupAll, restoreBackup, TEMPLATES, TUTORIALS, startEyedropper, samplePreview, shareProject, selectLayer, deselect, openSub, openSheet, goBack, addLayer, makeLayer, openCreate, store, setZoom, resetZoom, reparent, groupLayers, ungroup, deleteLayer, duplicateLayer, layerMatrix,
     handlePoints() { const L = selLayer(); if (!L) return null; const g = layerCorners(L), r = stage.getBoundingClientRect(), f = q => [r.left + q[0] * viewScale, r.top + q[1] * viewScale];
       return { corners: g.corners.map(f), mids: g.mids.map(f), rot: f(g.rotH), center: f([g.tr.x, g.tr.y]), viewScale }; } };
 }

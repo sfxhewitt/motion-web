@@ -3,7 +3,7 @@
 A mobile-first, browser-only motion-graphics editor — layers, keyframes, easing curves, WebGL effects, blend modes and video export.
 Built as a personal tool for iPhone Safari (add it to your Home Screen) that works just as well on desktop.
 
-The light home screen lists your projects (⋯ menu: rename / duplicate / delete); the mint **+** opens the Create sheet (name, ratio incl. custom, resolution, frame rate, background).
+The light home screen lists your projects (⋯ menu: rename / duplicate / save as template / make element / delete); the mint **+** opens the Create sheet (Project or Element; name, ratio incl. custom, resolution, frame rate, background). Pills switch to **Your Templates** (saved templates + five starters you can start a project from), **Elements** (transparent element projects + layers saved to My Elements) and **Cloud** (back up everything to one file, restore it on any device). The bottom bar's **Tutorials** are six in-app lessons with a "Try it" project; the avatar opens a local **Account** (name, storage stats, backup, erase).
 
 **Live:** https://sfxhewitt.github.io/motion-web/
 
