@@ -268,7 +268,7 @@ def run(pw, label, ctx_opts, mobile):
     pg.locator('dialog .chip', has_text='480p').click()
     pg.screenshot(path=f'{SHOTS}/{label}-06-export-dialog.png')
     pg.click('[data-testid=export-start]')
-    pg.wait_for_selector('[data-testid=export-result]', timeout=30000)
+    pg.wait_for_selector('[data-testid=export-result]', timeout=240000)  # frame-accurate export renders every frame: slow on software GL
     le = P('window.__lastExport')
     with pg.expect_download() as dl: pg.click('[data-testid=export-download]')
     vpath = f'{OUT}/{label}-export.{"mp4" if "mp4" in le["mime"] else "webm"}'; dl.value.save_as(vpath)
@@ -286,7 +286,7 @@ def run(pw, label, ctx_opts, mobile):
     # mp4 if supported in this engine
     if json.loads(fmts).get('mp4'):
         pg.select_option('[data-testid=export-format]', 'mp4'); pg.click('[data-testid=export-start]')
-        pg.wait_for_function("window.__lastExport && window.__lastExport.mime.includes('mp4')", timeout=30000)
+        pg.wait_for_function("window.__lastExport && window.__lastExport.mime.includes('mp4')", timeout=240000)
         le2 = P('window.__lastExport'); check(f'[{label}] MP4 export non-empty', le2['size'] > 1000, le2)
     pg.click('[data-testid=dlg-close]')
 
