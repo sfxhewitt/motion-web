@@ -137,6 +137,8 @@ body:not([data-mode=none]) #fab, body.sheet-open #fab { display: none; }
 .clip.t-adjust { background-color: #4b5068; background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.08) 0 6px, transparent 6px 12px); }
 .clip.strip { background-color: #1e2030; background-repeat: repeat-x; background-size: auto 100%; background-position: 0 0; box-shadow: none; border-radius: 0; }
 .clip.hidden { opacity: .4; }
+.clip .wave { position: absolute; left: 0; top: 0; height: 100%; pointer-events: none; }
+.clip.strip .wave { opacity: .8; }
 .clip .cn { flex: 1; min-width: 0; padding: 0 6px; font: 500 14px/1 var(--sans); letter-spacing: .01em; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .clip.sel { top: 1px; height: 30px; z-index: 1; border-top: 2px solid #fff; border-bottom: 2px solid #fff; border-radius: 0; }
 /* Select All Layers: every clip outlined white (no trim caps) */
@@ -728,3 +730,18 @@ body[data-mode=none] .m-kf { display: none; }
 .ez-grp { flex: 0 0 48px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 2px; }
 .ez-g { width: 40px; height: 44px; border-radius: 6px; color: #c9cbd6; display: inline-flex; align-items: center; justify-content: center; }
 .ez-g .ico { width: 26px; height: 26px; } .ez-g.on { background: #1f2232; color: var(--ac); }
+
+/* groups: member rows get a mint edge (one more step per nesting level); the group pill's thumbnail is a fold caret */
+.tl-label.ingroup { box-shadow: inset calc(var(--dep) * 3px) 0 0 var(--ac); }
+.tl-label .fold { width: 22px; height: 22px; padding: 0; background: none; border: 0; color: #fff; transform: rotate(-90deg); transition: transform .15s; display: grid; place-items: center; }
+.tl-label .fold.shut { transform: rotate(180deg); }
+.tl-label .fold svg { width: 14px; height: 14px; }
+
+/* timeline markers: small flags on the ruler */
+.tl-mark { position: absolute; top: 0; margin-left: -5px; width: 10px; height: 14px; background: var(--mc); clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%); cursor: pointer; z-index: 2; }
+
+/* colour fields: eyedropper + recent swatches */
+.cswatches { display: flex; gap: 6px; align-items: center; padding: 2px 0 8px; overflow-x: auto; }
+.cswatches .cdrop { width: 30px; height: 30px; flex: none; }
+.cswatches .csw { width: 22px; height: 22px; flex: none; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.35); padding: 0; }
+#stage.picking, #stage.picking * { cursor: crosshair; }

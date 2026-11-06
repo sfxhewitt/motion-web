@@ -11,10 +11,17 @@ export function initFxUI(ctx) { X = ctx; }
 const S = () => X.S, L_ = () => X.selLayer();
 
 // ---------- labels ----------
-const SHAPE_LABEL = { w: 'Width', h: 'Height', radius: 'Corner', points: 'Points', inner: 'Inner', thickness: 'Thickness' };
+const SHAPE_LABEL = { w: 'Width', h: 'Height', radius: 'Corner', points: 'Points', inner: 'Inner', thickness: 'Thickness', fill: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle', stroke: 'Border Color', strokeW: 'Border Width' };
+const NS_LABEL = {
+  text: { boxW: 'Box Width', fill2: 'Text Color 2', gradAngle: 'Gradient Angle', fill: 'Text Color', stroke: 'Border Color', strokeW: 'Border Width', size: 'Text Size', tracking: 'Tracking', lineHeight: 'Line Height' },
+  solid: { color: 'Color', fill2: 'Color 2', gradAngle: 'Gradient Angle' },
+  shadow: { color: 'Shadow Color', blur: 'Shadow Blur', dx: 'Shadow X', dy: 'Shadow Y', alpha: 'Shadow Opacity' },
+  media: { volume: 'Volume' },
+};
 export function propLabel(L, prop) {
   if (PROP_META[prop]) return PROP_META[prop].label;
   if (prop.startsWith('shape.')) return SHAPE_LABEL[prop.slice(6)] || prop.slice(6);
+  const [ns, k] = prop.split('.'); if (NS_LABEL[ns]) return NS_LABEL[ns][k] || k;
   if (prop.startsWith('fx.')) { const [, id, k] = prop.split('.'); const f = L?.effects.find(e => e.id === id), d = f && EFFECTS[f.type]; return d ? `${d.name} · ${d.params[k]?.label || k}` : k; }
   return prop;
 }
@@ -413,11 +420,14 @@ export function panelEase(L) {
   const content = h('div', { class: 'ez' }, h('div', { class: 'ez-main' }, box, bar), presets, groups);
   const left = [
     h('button', { class: 'ib', title: 'Reverse', 'data-testid': 'ease-rev', disabled: !has, onclick: () => { apply(reverseEase(cur)); X.renderPanel(); } }, icon('swap')),
-    h('button', { class: 'ib', title: 'More', 'data-testid': 'ease-more', onclick: ev => { if (!has) return; popMenu(ev.currentTarget, [
-      ['Apply to All Keyframes', 'ezm-all', () => { const lay = ks[0].L, prop = ks[0].prop; (lay.keys[prop] || []).forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes of this property'); }],
-      ['Apply to Whole Layer', 'ezm-layer', () => { const lay = ks[0].L; for (const p in lay.keys) lay.keys[p].forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes in layer'); }],
-      ['Reset to Linear', 'ezm-linear', () => { apply(makeEase('linear')); X.renderPanel(); }],
-      ['Delete Keyframe', 'ezm-del', () => { ks.forEach(({ L: lay, prop, k }) => removeKey(lay, prop, k.id)); S().selKeys.clear(); X.commit(); }],
+    h('button', { class: 'ib', title: 'More', 'data-testid': 'ease-more', onclick: ev => { popMenu(ev.currentTarget, [
+      ['Copy Keyframes', 'ezm-copy', () => X.copySelectedKeys(), !has],
+      ['Paste Keyframes', 'ezm-paste', () => X.pasteKeysHere()],
+      ['Select All Keyframes', 'ezm-selall', () => X.selectAllKeys()],
+      has && ['Apply to All Keyframes', 'ezm-all', () => { const lay = ks[0].L, prop = ks[0].prop; (lay.keys[prop] || []).forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes of this property'); }],
+      has && ['Apply to Whole Layer', 'ezm-layer', () => { const lay = ks[0].L; for (const p in lay.keys) lay.keys[p].forEach(k => (k.ease = clone(cur))); X.commit(); toast('Applied to all keyframes in layer'); }],
+      has && ['Reset to Linear', 'ezm-linear', () => { apply(makeEase('linear')); X.renderPanel(); }],
+      has && ['Delete Keyframe', 'ezm-del', () => { ks.forEach(({ L: lay, prop, k }) => removeKey(lay, prop, k.id)); S().selKeys.clear(); X.commit(); }],
     ], 'ease-menu'); } }, icon('dots')),
   ];
   return { content, left, cls: 'ease' };

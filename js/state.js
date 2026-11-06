@@ -8,7 +8,21 @@ export const PROP_META = {
   scale:    { label: 'Scale',   min: 0,     max: 5,    step: 0.01 },
   rotation: { label: 'Rotate',  min: -720,  max: 720,  step: 0.5 },
   opacity:  { label: 'Opacity', min: 0,     max: 1,    step: 0.01 },
+  scaleX:   { label: 'Scale X', min: -5,    max: 5,    step: 0.01 },
+  scaleY:   { label: 'Scale Y', min: -5,    max: 5,    step: 0.01 },
+  skew:     { label: 'Skew',    min: -85,   max: 85,   step: 0.5 },
+  anchorX:  { label: 'Pivot X', min: -2000, max: 2000, step: 1 },
+  anchorY:  { label: 'Pivot Y', min: -2000, max: 2000, step: 1 },
+  z:        { label: 'Z Position', min: -4000, max: 4000, step: 1 },
+  rotX:     { label: 'Rotate X', min: -360, max: 360, step: 0.5 },
+  rotY:     { label: 'Rotate Y', min: -360, max: 360, step: 0.5 },
+  zoom:     { label: 'Zoom',    min: 0.2,   max: 5,    step: 0.01 },
 };
+// 3D layers (L.is3d) add depth and tilt; a camera layer adds dolly (z) and zoom
+export const XFORM3D_PROPS = ['z', 'rotX', 'rotY'];
+// extra transform values (Move & Transform): default when a layer doesn't store them
+export const XFORM_PROPS = ['scaleX', 'scaleY', 'skew', 'anchorX', 'anchorY'];
+const PROP_DEFAULT = { scaleX: 1, scaleY: 1, skew: 0, anchorX: 0, anchorY: 0, z: 0, rotX: 0, rotY: 0, zoom: 1 };
 
 export const ASPECTS = {
   '9:16': [1080, 1920], '16:9': [1920, 1080], '1:1': [1080, 1080], '4:5': [1080, 1350], '4:3': [1440, 1080],
@@ -94,6 +108,22 @@ export function makeLayer(p, type, opts = {}) {
       L = baseLayer(p, 'adjust', 'Adjustment');
       break;
     }
+    // group: members carry `group` = its id and use it as their parent; null: an invisible transform to parent layers to
+    case 'comp': { // another project placed as a layer (Element / Project)
+      L = baseLayer(p, 'comp', opts.name || 'Element');
+      L.comp = { id: opts.compId, speed: 1, offset: 0, bg: false };
+      if (opts.w && opts.h) L.props.scale = +Math.min(1, p.w / opts.w, p.h / opts.h).toFixed(3);
+      if (opts.duration) L.end = Math.min(p.duration, opts.duration);
+      break;
+    }
+    case 'camera': { // looks at the composition; moves / tilts the 3D layers (2D layers stay put)
+      L = baseLayer(p, 'camera', 'Camera');
+      break;
+    }
+    case 'group': case 'null': {
+      L = baseLayer(p, type, opts.name || (type === 'group' ? 'Group' : 'Null') + ' ' + (p.layers.filter(l => l.type === type).length + 1));
+      break;
+    }
     case 'image': case 'video': {
       L = baseLayer(p, type, opts.name || (type === 'image' ? 'Image' : 'Video'));
       L.media = { id: opts.mediaId, w: opts.w || p.w, h: opts.h || p.h, volume: 1, offset: 0 };
@@ -110,19 +140,29 @@ export function makeLayer(p, type, opts = {}) {
 // ---- keyframes ----
 export function hasKeys(L, prop) { return !!(L.keys[prop] && L.keys[prop].length); }
 
+// Nested layer objects whose values can be keyframed as '<ns>.<key>' (shape.fill, text.size, shadow.blur, media.volume …)
+export const NS = ['shape', 'text', 'solid', 'shadow', 'media'];
+// a copy of L[ns] with its keyframed values evaluated at t (the object itself when nothing in it is animated)
+export function evalNs(L, ns, t) {
+  const o = L[ns]; if (!o) return o;
+  let out = null;
+  for (const k in L.keys) if (k.startsWith(ns + '.') && L.keys[k].length) { out = out || { ...o }; out[k.slice(ns.length + 1)] = valueAt(L, k, t); }
+  return out || o;
+}
+
 // Animated values may be numbers, vectors (arrays), hex colours or discrete values (bool / select / layer id).
 export function baseGet(L, prop) {
   if (prop in L.props) return L.props[prop];
-  const i = prop.indexOf('.'); if (i < 0) return L.props[prop];
+  const i = prop.indexOf('.'); if (i < 0) return PROP_DEFAULT[prop];
   const ns = prop.slice(0, i), rest = prop.slice(i + 1);
-  if (ns === 'shape') return L.shape?.[rest];
+  if (NS.includes(ns)) return L[ns]?.[rest];
   if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); return f ? f.params[rest.slice(j + 1)] : undefined; }
   return undefined;
 }
 export function baseSet(L, prop, v) {
   const i = prop.indexOf('.'); if (i < 0) { L.props[prop] = v; return; }
   const ns = prop.slice(0, i), rest = prop.slice(i + 1);
-  if (ns === 'shape' && L.shape) L.shape[rest] = v;
+  if (NS.includes(ns)) { if (L[ns]) L[ns][rest] = v; }
   else if (ns === 'fx') { const j = rest.indexOf('.'), f = (L.effects || []).find(e => e.id === rest.slice(0, j)); if (f) f.params[rest.slice(j + 1)] = v; }
 }
 const hexRe = /^#[0-9a-f]{6}$/i;
@@ -179,11 +219,62 @@ export function writeProp(L, prop, t, v) {
   if (hasKeys(L, prop)) setKey(L, prop, t, v); else baseSet(L, prop, v);
 }
 
+// Keyframe clipboard: keys stored relative to the earliest copied one; pasted at the playhead onto any layer
+// (effect keys only land on a layer that has that effect)
+export function copyKeys(list) {
+  const t0 = Math.min(...list.map(x => x.k.t));
+  return { keys: list.map(({ prop, k }) => ({ prop, dt: +(k.t - t0).toFixed(4), v: clone(k.v), ease: clone(k.ease) })) };
+}
+export function pasteKeys(L, clip, t) {
+  const out = [];
+  for (const q of clip?.keys || []) {
+    if (baseGet(L, q.prop) === undefined && !(q.prop in PROP_META)) continue;
+    out.push(setKey(L, q.prop, +(t + q.dt).toFixed(4), clone(q.v), clone(q.ease)));
+  }
+  return out;
+}
+
 export function allKeys(L) {
   const out = [];
   for (const p of Object.keys(L.keys)) for (const k of L.keys[p]) out.push({ prop: p, k });
   return out;
 }
+
+// Media clips map timeline time to source time: forward  src = offset + (t - start) · speed
+//                                               reversed src = offset + (end - t) · speed
+// so `offset` is the source time at the clip's first (forward) or last (reversed) frame.
+const isMedia = L => L.media && (L.type === 'video' || L.type === 'audio');
+export function mediaTime(L, t) {
+  const m = L.media, sp = m.speed || 1;
+  return Math.max(0, (m.offset || 0) + (m.reverse ? L.end - t : t - L.start) * sp);
+}
+// Move a clip's in-point; media layers slide their source offset with it so a trim cuts into the media
+// (never before the source's first frame).
+export function setStart(L, s) {
+  if (isMedia(L) && !L.media.reverse) {
+    const o = L.media.offset || 0, sp = L.media.speed || 1;
+    s = Math.max(s, L.start - o / sp);
+    L.media.offset = +(o + (s - L.start) * sp).toFixed(4);
+  }
+  L.start = s;
+}
+// Move a clip's out-point (a reversed clip's source offset sits at its end)
+export function setEnd(L, e) {
+  if (isMedia(L) && L.media.reverse) {
+    const o = L.media.offset || 0, sp = L.media.speed || 1;
+    e = Math.min(e, L.end + o / sp);
+    L.media.offset = +(o + (L.end - e) * sp).toFixed(4);
+  }
+  L.end = e;
+}
+// Change a media clip's speed; the clip covers the same source span, so it gets longer / shorter.
+// Reversing keeps the span too (`offset` is its lowest source time either way).
+export function setSpeed(L, sp) {
+  const m = L.media, old = m.speed || 1;
+  L.end = L.start + (L.end - L.start) * old / sp; m.speed = sp;
+}
+// Play the clip's source span backwards (same frames, opposite order)
+export function setReverse(L, on) { L.media.reverse = !!on; }
 
 export function shiftLayer(L, dt) {
   L.start += dt; L.end += dt;

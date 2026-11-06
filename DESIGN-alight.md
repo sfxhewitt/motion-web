@@ -74,8 +74,10 @@ Title in the top bar (+ ◆ keyframe-all button), left column with `<` back and 
 
 ## Knowingly different
 - Name, logo, icons and shape set are KINETIC's own; no watermark, music or template library.
-- Camera, Empty Group, Null, Elements, Templates browse, Speed and Smudge are "coming soon" toasts.
-- Edit Points is simplified (straight segments, no bezier handles).
+- The Templates browse, Your Templates, Cloud, Tutorials and Account entries are still "coming soon" toasts, because they need hosted content.
+- 3D layers are drawn as perspective-warped planes (a triangle mesh on the 2D canvas). Selection handles stay 2D.
+- In nested projects (Element / Project layers), video shows the frame the source element is on and isn't seeked per frame.
+- Bezier points use mirrored (smooth) handles; there are no broken / independent handles.
 - Edge handles on text / solid / drawing layers scale uniformly (those layers have no per-axis size).
 - Keyframe easing editor (bezier) is KINETIC's own.
 
