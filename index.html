@@ -70,16 +70,16 @@
       <button id="homeImport" class="hb-btn" data-testid="home-import">Import</button>
       <button id="homeBannerX" class="hb-x" title="Dismiss" aria-label="Dismiss" data-testid="home-banner-close"></button>
     </div>
-    <div class="h-pills" data-testid="home-pills"><button class="on" data-testid="pill-projects">Projects</button><button data-soon="Your Templates">Your Templates</button><button data-soon="Elements">Elements</button><button data-soon="Cloud">Cloud<i class="tag">NEW</i></button></div>
-    <h2 class="h-head">Your projects</h2>
+    <div class="h-pills" data-testid="home-pills"><button class="on" data-tab="projects" data-testid="pill-projects">Projects</button><button data-tab="templates" data-testid="pill-templates">Your Templates</button><button data-tab="elements" data-testid="pill-elements">Elements</button><button data-tab="cloud" data-testid="pill-cloud">Cloud<i class="tag">NEW</i></button></div>
+    <h2 class="h-head" id="homeHead">Your projects</h2>
     <div id="homeList" class="h-list"></div>
   </div>
   <nav class="h-nav" data-testid="home-nav">
     <button class="on" data-nav="home"><span data-ic="home"></span><b>Home</b></button>
-    <button data-nav="tutorials" data-soon="Tutorials"><span data-ic="tutorials"></span><b>Tutorials</b></button>
+    <button data-nav="tutorials" data-testid="nav-tutorials"><span data-ic="tutorials"></span><b>Tutorials</b></button>
     <span class="h-navgap"></span>
     <button data-nav="projects"><span data-ic="projects"></span><b>Projects</b></button>
-    <button data-nav="templates" data-soon="Templates"><span data-ic="templates"></span><b>Templates</b><i class="tag">NEW</i></button>
+    <button data-nav="templates" data-testid="nav-templates"><span data-ic="templates"></span><b>Templates</b><i class="tag">NEW</i></button>
     <button id="homeNew" class="h-fab" title="Create" aria-label="Create" data-testid="home-new"></button>
   </nav>
 </section>
